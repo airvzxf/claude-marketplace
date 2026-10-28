@@ -1,0 +1,14 @@
+{
+  "name": "airvzxf",
+  "owner": { "name": "Israel Roldan", "url": "https://github.com/airvzxf" },
+  "metadata": { "description": "Claude Code plugins and mods by Israel Roldan." },
+  "plugins": [
+    {
+      "name": "usage-line",
+      "source": "./plugins/usage-line",
+      "description": "Model, context window and subscription usage (5-hour and weekly windows) in one line above the prompt.",
+      "version": "0.1.0",
+      "category": "productivity"
+    }
+  ]
+}

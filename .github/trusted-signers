@@ -1,0 +1,17 @@
+# Trusted tag signers, read by `.github/workflows/release.yml`
+# (`verify-tag-signature`) from origin/main through
+# `git config gpg.ssh.allowedsignersfile`.
+#
+# Format: one line per signer, `<principal> <key-type> <key-body>`.
+# Matching is by key body: every line is an unconditional grant of
+# release authority. Removing a line on main revokes that key for the
+# next release.
+#
+# ED25519 fingerprint: SHA256:POu2Sr8ILb1IM05Vh1cGU3xivjx05QjWoWYhdLc6YHA
+#
+# Verify locally with:
+#   git config gpg.format ssh
+#   git config gpg.ssh.allowedsignersfile .github/trusted-signers
+#   git verify-tag usage-line-v0.2.0
+
+israel.alberto.rv@gmail.com ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIPq6Zvvu+eTZQ0hUb/vHC5EfPEGvy1hTc0Psq9W2TMdz

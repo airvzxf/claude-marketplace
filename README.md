@@ -22,3 +22,15 @@ Each percentage is white, yellow from 50%, orange from 75% and red from 90%. The
 ```
 /plugin install usage-line --marketplace airvzxf/claude-marketplace
 ```
+
+## Releases
+
+Claude Code takes updates from the `version` in each plugin's `plugin.json` and in `.claude-plugin/marketplace.json`, not from tags: bump both together (CI checks they match). Each release is also a signed tag, `<plugin>-vX.Y.Z`, on the merge commit in `main`:
+
+```
+git fetch origin
+git tag -s usage-line-v0.2.0 -m 'release: usage-line 0.2.0' origin/main
+git push origin usage-line-v0.2.0
+```
+
+The `release` workflow checks that the tag is on `main`, that it is signed by a key in `.github/trusted-signers` and that both manifests carry its version, then publishes a GitHub release with the plugin as `.zip` and `.tar.gz` and their `SHA256SUMS`.

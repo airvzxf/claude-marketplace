@@ -1,0 +1,108 @@
+name: ci
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  # The Claude Code release whose `claude plugin validate` and `claude plugin test`
+  # check the plugins. It needs no login or API key. Bump it by hand: Dependabot
+  # does not follow a global npm install.
+  CLAUDE_CODE_VERSION: 2.1.316
+
+jobs:
+  manifests:
+    name: 'Manifests · JSON and versions'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Every JSON file parses
+        run: |
+          set -euo pipefail
+          status=0
+          while IFS= read -r -d '' file; do
+            jq empty "$file" || { echo "::error file=$file::invalid JSON"; status=1; }
+          done < <(git ls-files -z '*.json')
+          exit "$status"
+
+      - name: Marketplace entries match their plugins
+        # Each entry's source folder holds a plugin.json with the same name and
+        # version: Claude Code decides updates from that version, so the two must
+        # move together.
+        run: |
+          set -euo pipefail
+          status=0
+          while IFS=$'\t' read -r name source version; do
+            manifest="${source#./}/.claude-plugin/plugin.json"
+            if [[ ! -f "$manifest" ]]; then
+              echo "::error file=.claude-plugin/marketplace.json::$name: $manifest not found"; status=1; continue
+            fi
+            actual_name="$(jq -r .name "$manifest")"
+            actual_version="$(jq -r .version "$manifest")"
+            [[ "$actual_name" == "$name" ]] \
+              || { echo "::error file=$manifest::name is '$actual_name', marketplace says '$name'"; status=1; }
+            [[ "$actual_version" == "$version" ]] \
+              || { echo "::error file=$manifest::version is $actual_version, marketplace says $version"; status=1; }
+            echo "$name $version ✓"
+          done < <(jq -r '.plugins[] | [.name, .source, .version] | @tsv' .claude-plugin/marketplace.json)
+          exit "$status"
+
+  plugins:
+    name: 'Plugins · validate and test'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 24
+
+      - name: Install Claude Code
+        # Its postinstall fetches the native binary for the runner, so scripts stay on.
+        run: npm install --global "@anthropic-ai/claude-code@${CLAUDE_CODE_VERSION}"
+
+      - name: Validate the marketplace
+        run: claude plugin validate .
+
+      - name: Validate and test each plugin
+        run: |
+          set -euo pipefail
+          for dir in plugins/*/; do
+            echo "::group::${dir}"
+            claude plugin validate "$dir"
+            if git ls-files "$dir" | grep -Eq '\.test\.tsx?$'; then
+              claude plugin test "$dir"
+            else
+              echo "no tests in ${dir}"
+            fi
+            echo "::endgroup::"
+          done
+
+  actionlint:
+    name: 'Workflows · actionlint'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: actionlint
+        uses: docker://rhysd/actionlint@sha256:b1934ee5f1c509618f2508e6eb47ee0d3520686341fec936f3b79331f9315667 # 1.7.12
+        with:
+          args: -color

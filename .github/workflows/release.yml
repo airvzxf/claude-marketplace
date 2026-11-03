@@ -1,0 +1,166 @@
+name: release
+
+on:
+  push:
+    # One tag per plugin release: `<plugin>-vX.Y.Z`, e.g. `usage-line-v0.2.0`,
+    # signed on the maintainer's workstation:
+    #   git tag -s usage-line-v0.2.0 -m 'release: usage-line 0.2.0' origin/main
+    #   git push origin usage-line-v0.2.0
+    # No `workflow_dispatch:` on purpose: a manual run has no tag object whose
+    # signature `verify-tag-signature` could check.
+    tags:
+      - '*-v*'
+
+concurrency:
+  group: release-${{ github.ref_name }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  # The tag names a plugin of the marketplace and a SemVer version, and at the
+  # tagged commit both manifests carry that version.
+  validate-tag:
+    name: 'Validate · tag and manifests'
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    outputs:
+      tag: ${{ steps.resolve.outputs.TAG }}
+      plugin: ${{ steps.resolve.outputs.PLUGIN }}
+      version: ${{ steps.resolve.outputs.VERSION }}
+      source: ${{ steps.resolve.outputs.SOURCE }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.ref }}
+          persist-credentials: false
+
+      - name: Resolve plugin and version
+        id: resolve
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          [[ "$TAG" =~ ^([a-z0-9][a-z0-9-]*)-v([0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z]+(\.[0-9A-Za-z]+)*)?)$ ]] \
+            || { echo "ERROR: '$TAG' is not <plugin>-vX.Y.Z[-prerelease]"; exit 1; }
+          PLUGIN="${BASH_REMATCH[1]}"
+          VERSION="${BASH_REMATCH[2]}"
+          SOURCE="$(jq -r --arg p "$PLUGIN" '.plugins[] | select(.name == $p) | .source' .claude-plugin/marketplace.json)"
+          [[ -n "$SOURCE" ]] || { echo "ERROR: no plugin '$PLUGIN' in .claude-plugin/marketplace.json"; exit 1; }
+          SOURCE="${SOURCE#./}"
+          LISTED="$(jq -r --arg p "$PLUGIN" '.plugins[] | select(.name == $p) | .version' .claude-plugin/marketplace.json)"
+          MANIFEST="$(jq -r .version "$SOURCE/.claude-plugin/plugin.json")"
+          [[ "$LISTED" == "$VERSION" && "$MANIFEST" == "$VERSION" ]] \
+            || { echo "ERROR: tag says $VERSION, marketplace.json says $LISTED, plugin.json says $MANIFEST"; exit 1; }
+          {
+            echo "TAG=${TAG}"
+            echo "PLUGIN=${PLUGIN}"
+            echo "VERSION=${VERSION}"
+            echo "SOURCE=${SOURCE}"
+          } >> "$GITHUB_OUTPUT"
+
+  # Tag the merge commit on main, never a branch tip that a squash merge leaves behind.
+  verify-tag-reachability:
+    name: 'Verify · tag is reachable from main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    needs: validate-tag
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.ref }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Fail if the tag's commit is not an ancestor of main
+        env:
+          TAG: ${{ needs.validate-tag.outputs.tag }}
+        run: |
+          set -euo pipefail
+          git fetch --no-tags origin main
+          TAG_COMMIT="$(git rev-parse "${TAG}^{commit}")"
+          if git merge-base --is-ancestor "$TAG_COMMIT" origin/main; then
+            echo "✓ ${TAG} (${TAG_COMMIT}) is reachable from origin/main"
+            exit 0
+          fi
+          {
+            echo "ERROR: ${TAG} points at ${TAG_COMMIT}, which is not on origin/main."
+            echo "Fix: git tag -d ${TAG} && git push origin :refs/tags/${TAG}"
+            echo "     git fetch origin && git tag -s ${TAG} -m 'release: ...' origin/main && git push origin ${TAG}"
+          } >&2
+          exit 1
+
+  # The allow-list is read from main, not from the tagged tree, so removing a
+  # key on main revokes it for every later release.
+  verify-tag-signature:
+    name: 'Verify · tag is signed by a trusted signer'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    needs: validate-tag
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.ref }}
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Verify the tag against .github/trusted-signers on main
+        env:
+          TAG: ${{ needs.validate-tag.outputs.tag }}
+        run: |
+          set -euo pipefail
+          git fetch --no-tags --depth=1 origin main
+          mkdir -p "$RUNNER_TEMP/trusted"
+          git show "origin/main:.github/trusted-signers" > "$RUNNER_TEMP/trusted/allowed_signers"
+          test -s "$RUNNER_TEMP/trusted/allowed_signers" \
+            || { echo "ERROR: empty .github/trusted-signers on origin/main"; exit 1; }
+          git config gpg.format ssh
+          git config gpg.ssh.allowedsignersfile "$RUNNER_TEMP/trusted/allowed_signers"
+          if git verify-tag "$TAG"; then
+            echo "✓ ${TAG} is signed by a key in .github/trusted-signers"
+            exit 0
+          fi
+          {
+            echo "ERROR: ${TAG} is unsigned or signed by a key not in .github/trusted-signers."
+            git cat-file tag "$TAG" | grep -E '^(tagger|-----BEGIN)' || true
+          } >&2
+          exit 1
+
+  publish:
+    name: 'Publish · GitHub release'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    needs: [validate-tag, verify-tag-reachability, verify-tag-signature]
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.ref }}
+          persist-credentials: false
+
+      - name: Package the plugin
+        env:
+          TAG: ${{ needs.validate-tag.outputs.tag }}
+          SOURCE: ${{ needs.validate-tag.outputs.source }}
+          PLUGIN: ${{ needs.validate-tag.outputs.plugin }}
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+          # Only what git tracks, rooted at the plugin's own folder.
+          git archive --format=zip --prefix="${PLUGIN}/" -o "dist/${TAG}.zip" "${TAG}:${SOURCE}"
+          git archive --format=tar.gz --prefix="${PLUGIN}/" -o "dist/${TAG}.tar.gz" "${TAG}:${SOURCE}"
+          (cd dist && sha256sum ./*.zip ./*.tar.gz > SHA256SUMS)
+          cat dist/SHA256SUMS
+
+      - uses: softprops/action-gh-release@efb35369e0ad2afab669f228072c1b0d510eae64 # v3.0.3
+        with:
+          tag_name: ${{ needs.validate-tag.outputs.tag }}
+          name: ${{ needs.validate-tag.outputs.plugin }} ${{ needs.validate-tag.outputs.version }}
+          prerelease: ${{ contains(needs.validate-tag.outputs.version, '-') }}
+          generate_release_notes: true
+          files: |
+            dist/*.zip
+            dist/*.tar.gz
+            dist/SHA256SUMS

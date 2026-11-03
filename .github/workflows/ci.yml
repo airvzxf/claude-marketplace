@@ -73,7 +73,8 @@ jobs:
           node-version: 24
 
       - name: Install Claude Code
-        run: npm install --global --ignore-scripts "@anthropic-ai/claude-code@${CLAUDE_CODE_VERSION}"
+        # Its postinstall fetches the native binary for the runner, so scripts stay on.
+        run: npm install --global "@anthropic-ai/claude-code@${CLAUDE_CODE_VERSION}"
 
       - name: Validate the marketplace
         run: claude plugin validate .

@@ -7,7 +7,7 @@
       "name": "usage-line",
       "source": "./plugins/usage-line",
       "description": "Model, context window and subscription usage (5-hour and weekly windows) in one line above the prompt.",
-      "version": "0.1.0",
+      "version": "0.2.0",
       "category": "productivity"
     }
   ]

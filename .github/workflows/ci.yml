@@ -8,10 +8,6 @@ on:
 permissions:
   contents: read
 
-concurrency:
-  group: ci-${{ github.ref }}
-  cancel-in-progress: true
-
 env:
   # The Claude Code release whose `claude plugin validate` and `claude plugin test`
   # check the plugins. It needs no login or API key. Bump it by hand: Dependabot

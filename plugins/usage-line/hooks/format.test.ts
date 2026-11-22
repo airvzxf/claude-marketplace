@@ -1,10 +1,12 @@
 import { expect, test } from 'claude-code/testing'
 
-import { colorFor, mergeLimits, modelName, partsOf, roomNeeded, textOf, tokens, until } from './format'
+import { colorFor, effortName, effortOfCommand, mergeLimits, modelName, roomNeeded, textOf, tokens, until, viewOf } from './format'
+import type { Line } from '../types'
 
 const HOUR = 3_600_000
 const NOW = Date.parse('2026-11-02T12:00:00.000Z')
 const at = (ms: number) => new Date(NOW + ms).toISOString()
+const lineOf = (line: Partial<Line>): Line => ({ model: '', effort: '', context: null, limits: [], ...line })
 
 test('the model id reads as its family and version', () => {
   expect(modelName('claude-opus-5-5')).toBe('Opus 5.5')
@@ -12,6 +14,21 @@ test('the model id reads as its family and version', () => {
   expect(modelName('claude-haiku-5-5-20261001')).toBe('Haiku 5.5')
   expect(modelName('claude-fable-5-1')).toBe('Fable 5.1')
   expect(modelName('some-other-model')).toBe('some-other-model')
+})
+
+test('the effort reads capitalized, a number as it is', () => {
+  expect(effortName('xhigh')).toBe('Xhigh')
+  expect(effortName('max')).toBe('Max')
+  expect(effortName(42)).toBe('42')
+  expect(effortName(undefined)).toBe('')
+})
+
+test('an /effort run tells the level it set, by its output or its arguments', () => {
+  expect(effortOfCommand('max', 'Set effort level to max (this session only)')).toBe('Max')
+  expect(effortOfCommand('', 'Set effort level to medium (saved as your default for new sessions)')).toBe('Medium')
+  expect(effortOfCommand(' XHigh ', undefined)).toBe('Xhigh')
+  expect(effortOfCommand('auto', 'Effort level set to auto')).toBe('')
+  expect(effortOfCommand('', '')).toBe('')
 })
 
 test('tokens read in k and m', () => {
@@ -37,20 +54,33 @@ test('the color steps up at 50, 75 and 90 percent', () => {
 })
 
 test('the line carries a letter for each section', () => {
-  const parts = partsOf({
+  const view = viewOf(lineOf({
     model: 'Opus 5.5',
     context: { percent: 12, tokens: 115_000, window: 1_000_000 },
     limits: [
       { kind: 'five_hour', percentUsed: 57, resetsAt: at(27 * 60_000 + 17_000) },
       { kind: 'seven_day', percentUsed: 8, resetsAt: at(6 * 24 * HOUR + 19 * HOUR + 30 * 60_000) }
     ]
-  }, NOW)
-  expect(textOf('Opus 5.5', parts)).toBe('Opus 5.5 | C 12% (115k/1m) | H 57% (27m 17s) | W 8% (6d 19h)')
+  }), NOW)
+  expect(textOf(view)).toBe('Opus 5.5 | C 12% (115k/1m) | H 57% (27m 17s) | W 8% (6d 19h)')
+})
+
+test('the effort follows the model, and the age of the reading closes the line', () => {
+  const limits = [{ kind: 'five_hour', percentUsed: 9, resetsAt: at(3 * HOUR + 58 * 60_000 + 30_000) }]
+  const view = (readAt: number) => viewOf(lineOf({ model: 'Opus 5.5', effort: 'Xhigh', limits, readAt }), NOW)
+  expect(textOf(view(NOW - 5_000))).toBe('Opus 5.5 Xhigh | H 9% (3h 58m) | 5s ago')
+  expect(textOf(view(NOW - (35 * 60_000 + 3_000)))).toBe('Opus 5.5 Xhigh | H 9% (3h 58m) | 35m 3s ago')
+  expect(textOf(view(NOW - (HOUR + 35 * 60_000)))).toBe('Opus 5.5 Xhigh | H 9% (3h 58m) | 1h 35m ago')
+})
+
+test('no age without a reading time or without windows', () => {
+  expect(textOf(viewOf(lineOf({ model: 'Opus 5.5', limits: [{ kind: 'five_hour', percentUsed: 9 }] }), NOW))).toBe('Opus 5.5 | H 9%')
+  expect(textOf(viewOf(lineOf({ model: 'Opus 5.5', readAt: NOW }), NOW))).toBe('Opus 5.5')
 })
 
 test('a window past its reset shows 0% and no countdown', () => {
-  const parts = partsOf({ model: '', context: null, limits: [{ kind: 'five_hour', percentUsed: 93, resetsAt: at(-1000) }] }, NOW)
-  expect(textOf('', parts)).toBe('H 0%')
+  const view = viewOf(lineOf({ limits: [{ kind: 'five_hour', percentUsed: 93, resetsAt: at(-1000) }] }), NOW)
+  expect(textOf(view)).toBe('H 0%')
 })
 
 test('a stale reading never replaces a newer one, in either order', () => {
@@ -77,7 +107,9 @@ test('a reading that lacks a window keeps the one known before', () => {
 })
 
 test('the room the line asks for does not change as the seconds go by', () => {
-  const line = (ms: number) => partsOf({ model: 'Opus 5.5', context: null, limits: [{ kind: 'five_hour', percentUsed: 57, resetsAt: at(ms) }] }, NOW)
-  expect(roomNeeded('Opus 5.5', line(27 * 60_000 + 9_000))).toBe(roomNeeded('Opus 5.5', line(27 * 60_000 + 10_000)))
-  expect(roomNeeded('Opus 5.5', line(59_000))).toBe(roomNeeded('Opus 5.5', line(9 * HOUR)))
+  const line = (ms: number, age = 0) =>
+    viewOf(lineOf({ model: 'Opus 5.5', limits: [{ kind: 'five_hour', percentUsed: 57, resetsAt: at(ms) }], readAt: NOW - age }), NOW)
+  expect(roomNeeded(line(27 * 60_000 + 9_000))).toBe(roomNeeded(line(27 * 60_000 + 10_000)))
+  expect(roomNeeded(line(59_000))).toBe(roomNeeded(line(9 * HOUR)))
+  expect(roomNeeded(line(HOUR, 5_000))).toBe(roomNeeded(line(HOUR, 35 * 60_000 + 3_000)))
 })

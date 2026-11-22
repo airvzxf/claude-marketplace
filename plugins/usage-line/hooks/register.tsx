@@ -2,10 +2,10 @@ import { atom, read, update } from 'claude-code'
 import type { EngineInterface, Register, RenderNode, RenderViewport, SessionContextUsage } from 'claude-code'
 
 import type { Limit, Line } from '../types'
-import { BETWEEN, MUTED, WHITE, colorFor, mergeLimits, modelName, partsOf, roomNeeded, textOf, widthOf, windowsOf } from './format'
-import type { Part } from './format'
+import { AGO, BETWEEN, MUTED, WHITE, ROSE, colorFor, effortName, effortOfCommand, isEmpty, mergeLimits, modelName, roomNeeded, textOf, viewOf, widthOf, windowsOf } from './format'
+import type { View } from './format'
 
-const EMPTY: Line = { model: '', context: null, limits: [] }
+const EMPTY: Line = { model: '', effort: '', context: null, limits: [] }
 const line = atom({ plugin: 'usage-line', key: 'line' } as const, EMPTY)
 const tick = atom({ plugin: 'usage-line', key: 'tick' } as const, 0) // redraws the countdowns
 
@@ -40,6 +40,8 @@ function widthOfNode (node: RenderNode | undefined, modes: readonly string[]): n
 
 let current: Line = EMPTY
 let last = ''
+// The effort the settings named at the last read: a change there shows before the next request does.
+let settingEffort: string | undefined
 let lastText = ''
 // The hint as last drawn on the terminal, in columns, and whether the line fit beside the mode label.
 let hintWidth = 0
@@ -67,24 +69,48 @@ async function show ($: EngineInterface, patch: Partial<Line>) {
  * stores the result when it adds to the store. Every session settles on the same windows this way: a
  * stale reading never overwrites a newer one, and one that lacks a window keeps the known one.
  */
-async function remember ($: EngineInterface, reading: Limit[]) {
-  const saved = await $.store.get('limits')
+async function remember ($: EngineInterface, reading: Limit[], readAt?: number) {
+  const [saved, savedAt] = await Promise.all([$.store.get('limits'), $.store.get('readAt')])
   const stored = Array.isArray(saved) ? (saved as Limit[]) : []
   const limits = mergeLimits(stored, current.limits, reading)
-  await show($, { limits })
+  // When any session last had a response, and so the windows a reading: the latest of them all.
+  const storedAt = typeof savedAt === 'number' ? savedAt : undefined
+  const times = [storedAt, current.readAt, readAt].filter((t): t is number => t !== undefined)
+  const latest = times.length > 0 ? Math.max(...times) : undefined
+  await show($, latest === undefined ? { limits } : { limits, readAt: latest })
   if (JSON.stringify(limits) !== JSON.stringify(stored)) await $.store.set('limits', limits)
+  if (latest !== undefined && latest !== storedAt) await $.store.set('readAt', latest)
+}
+
+/** The effort the settings give the model: its own (`modelSettings`), else the one for all; '' when they name none. */
+async function effortInSettings ($: EngineInterface, model: string) {
+  const settings = await $.settings.read()
+  const id = model.replace(/\[.*\]$/, '')
+  const perModel = (settings.modelSettings as Record<string, { effortLevel?: unknown } | undefined> | undefined)?.[id]?.effortLevel
+  const effort = perModel ?? settings.effortLevel
+  return typeof effort === 'string' || typeof effort === 'number' ? effortName(effort) : ''
 }
 
 async function sync ($: EngineInterface) {
   const [model, usage] = await Promise.all([$.session.model(), $.session.usage()])
   const context = contextOf(usage.context)
-  await show($, context ? { model: modelName(model), context } : { model: modelName(model) })
+  const effort = await effortInSettings($, model).catch(() => settingEffort ?? '')
+  const patch: Partial<Line> = { model: modelName(model) }
+  if (effort !== settingEffort) {
+    // Settings that name no effort leave the model at its default, which they do not say: the
+    // effort shown stays, and before anything showed one, the one the engine runs at.
+    const first = settingEffort === undefined
+    settingEffort = effort
+    if (effort) patch.effort = effort
+    else if (first && !current.effort) patch.effort = effortName(await $.env.get('CLAUDE_EFFORT').catch(() => undefined))
+  }
+  await show($, context ? { ...patch, context } : patch)
   await remember($, windowsOf(usage.rateLimits))
 }
 
 /** Redraws when the countdown's text changes: every second when it shows seconds, every minute when minutes. */
 async function countdown ($: EngineInterface) {
-  const text = textOf(current.model, partsOf(current, await $.clock.now()))
+  const text = textOf(viewOf(current, await $.clock.now()))
   if (text === lastText) return
   lastText = text
   await update($, tick, n => n + 1)
@@ -97,20 +123,28 @@ function place ($: EngineInterface, below: boolean) {
   $.ui.invalidate('ui.render')
 }
 
-/** The line itself: the model, then each letter and percentage with its details in parentheses. */
-function draw ($: EngineInterface, e: Parameters<EngineInterface['ui']['resolve']>[0], model: string, parts: Part[]) {
+/**
+ * The line itself: the model and its effort, then each letter and percentage with its details in
+ * parentheses, then how long ago the windows were read. The numbers are white (a percentage takes
+ * its warning color); the account's words, H, W and `ago`, are rose; the rest is gray.
+ */
+function draw ($: EngineInterface, e: Parameters<EngineInterface['ui']['resolve']>[0], { model, effort, parts, age }: View) {
   const { Box, Text } = $.ui.resolve(e)
   return (
     <Box flexDirection="row">
       {model ? <Text color={WHITE}>{model}</Text> : null}
+      {model && effort ? <Text color={MUTED}> {effort}</Text> : null}
       {parts.map((part, i) => (
         <Box key={part.label} flexDirection="row">
           {model || i > 0 ? <Text color={MUTED}>{BETWEEN}</Text> : null}
-          <Text color={MUTED}>{part.label} </Text>
+          <Text color={part.label === 'C' ? MUTED : ROSE}>{part.label} </Text>
           <Text color={colorFor(part.percent)}>{Math.round(part.percent)}%</Text>
           {part.detail ? <Text color={MUTED}> ({part.detail})</Text> : null}
         </Box>
       ))}
+      {age ? <Text color={MUTED}>{BETWEEN}</Text> : null}
+      {age ? <Text color={WHITE}>{age}</Text> : null}
+      {age ? <Text color={ROSE}>{AGO}</Text> : null}
     </Box>
   )
 }
@@ -118,6 +152,7 @@ function draw ($: EngineInterface, e: Parameters<EngineInterface['ui']['resolve'
 export const register: Register = on => {
   current = EMPTY
   last = ''
+  settingEffort = undefined
   lastText = ''
   hintWidth = 0
   isBelow = false
@@ -142,6 +177,26 @@ export const register: Register = on => {
     return next(e)
   })
 
+  // Each request to the model: main's names the effort it is sent at (after any downgrade for the
+  // model), and every response, a subagent's too, is a new reading of the windows.
+  on('turn.step', async function* ($, e, next) {
+    if (e.agentId === undefined) void show($, { effort: effortName(e.effort) }).catch(() => {})
+    const result = yield* next(e)
+    void (async () => {
+      const [usage, now] = await Promise.all([$.session.usage(), $.clock.now()])
+      await remember($, windowsOf(usage.rateLimits), now)
+    })().catch(() => {})
+    return result
+  })
+
+  // `/effort max`: the line shows the new level as soon as it is set, saved or for this session only.
+  on('command.run', { command: 'effort' }, async ($, e, next) => {
+    const result = await next(e)
+    const effort = effortOfCommand(e.args, result.text)
+    if (effort) await show($, { effort }).catch(() => {})
+    return result
+  })
+
   on('session.measure', async ($, e, next) => {
     const context = contextOf(e.context)
     if (context) await show($, { context })
@@ -153,13 +208,13 @@ export const register: Register = on => {
   // (the engine's mode labels, another plugin's switch) stays after it.
   on('ui.render', { component: 'SessionMode' }, async ($, e, next) => {
     const [data, , now, beneath] = await Promise.all([read($, line), read($, tick), $.clock.now(), next(e)])
-    const parts = partsOf(data, now)
-    if (!data.model && parts.length === 0) {
+    const view = viewOf(data, now)
+    if (isEmpty(view)) {
       place($, false)
       return beneath
     }
     const hasBeneath = e.props.modes.length > 0 || !isBlank(beneath)
-    const width = roomNeeded(data.model, parts) + (hasBeneath ? widthOfNode(beneath, e.props.modes) + SEPARATOR.length : 0)
+    const width = roomNeeded(view) + (hasBeneath ? widthOfNode(beneath, e.props.modes) + SEPARATOR.length : 0)
     const fits = width <= roomOf(e)
     place($, fits)
     if (!fits) return beneath
@@ -167,7 +222,7 @@ export const register: Register = on => {
     const { Box, Text } = $.ui.resolve(e)
     return (
       <Box flexDirection="row">
-        {draw($, e, data.model, parts)}
+        {draw($, e, view)}
         {hasBeneath ? <Text color={MUTED}>{SEPARATOR}</Text> : null}
         {beneath}
       </Box>
@@ -178,15 +233,15 @@ export const register: Register = on => {
   on('ui.render', { component: 'AbovePrompt' }, async ($, e, next) => {
     if (e.props.hasSurvey || isBelow) return next(e)
     const [data, , now, beneath] = await Promise.all([read($, line), read($, tick), $.clock.now(), next(e)])
-    const parts = partsOf(data, now)
-    if (!data.model && parts.length === 0) return beneath
+    const view = viewOf(data, now)
+    if (isEmpty(view)) return beneath
 
     const { Box } = $.ui.resolve(e)
     return (
       <Box flexDirection="column">
         {beneath}
         <Box key="usage-line" width={e.props.bodyColumns} justifyContent="flex-end">
-          {draw($, e, data.model, parts)}
+          {draw($, e, view)}
         </Box>
       </Box>
     )

@@ -8,16 +8,18 @@ Claude Code plugins and mods by Israel Roldan.
 
 ## usage-line
 
-Everything you need to keep an eye on, in one line at the bottom right, beside the permission mode (or right above the prompt when that row has no room): the model, the context window fill and the subscription's 5-hour and weekly windows.
+Everything you need to keep an eye on, in one line at the bottom right, beside the permission mode (or right above the prompt when that row has no room): the model and its effort, the context window fill, the subscription's 5-hour and weekly windows, and how long ago those windows were read.
 
 ```
-Opus 5.5 | C 3% (29k/1m) | H 92% (3h 7m) | W 66% (5d 19h)
+Opus 5.5 Xhigh | C 3% (29k/1m) | H 92% (3h 7m) | W 66% (5d 19h) | 1h 35m ago
 ```
 
+- **Model and effort**: the effort the session is at now. `/effort max` shows `Max` at once, saved or for the session only; each request then shows the effort it went out at.
 - **C, context**: percentage used, then tokens used / window size.
 - **H and W, the 5-hour and weekly windows**: percentage used, then the time until they reset: `5d 19h`, `8h 59m`, then `20m 5s` and `59s` counting down by the second in the last hour.
+- **Age**: how long ago a response last reported the windows, in this session or any other: `5s`, `35m 3s`, `1h 35m`, `2d 4h`. The percentages only change with a response, so a session left alone shows them as they were, and this says how old they are.
 
-Each percentage is white, yellow from 50%, orange from 75% and red from 90%. The separators and the details in parentheses stay in a light gray so the percentages stand out.
+The numbers are white: the age, and each percentage until it turns yellow from 50%, orange from 75% and red from 90%. `H`, `W` and `ago`, what the account shares across sessions, are a dim rose, so the three read as one group. The separators, the effort, `C` and the details in parentheses stay in a light gray so the numbers stand out.
 
 ```
 /plugin install usage-line --marketplace airvzxf/claude-marketplace

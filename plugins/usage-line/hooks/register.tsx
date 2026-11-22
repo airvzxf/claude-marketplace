@@ -2,7 +2,7 @@ import { atom, read, update } from 'claude-code'
 import type { EngineInterface, Register, RenderNode, RenderViewport, SessionContextUsage } from 'claude-code'
 
 import type { Limit, Line } from '../types'
-import { AGE, AGO, BETWEEN, MUTED, WHITE, colorFor, effortName, effortOfCommand, isEmpty, mergeLimits, modelName, roomNeeded, textOf, viewOf, widthOf, windowsOf } from './format'
+import { AGO, BETWEEN, MUTED, WHITE, ROSE, colorFor, effortName, effortOfCommand, isEmpty, mergeLimits, modelName, roomNeeded, textOf, viewOf, widthOf, windowsOf } from './format'
 import type { View } from './format'
 
 const EMPTY: Line = { model: '', effort: '', context: null, limits: [] }
@@ -125,7 +125,8 @@ function place ($: EngineInterface, below: boolean) {
 
 /**
  * The line itself: the model and its effort, then each letter and percentage with its details in
- * parentheses, then how long ago the windows were read.
+ * parentheses, then how long ago the windows were read. The numbers are white (a percentage takes
+ * its warning color); the account's words, H, W and `ago`, are rose; the rest is gray.
  */
 function draw ($: EngineInterface, e: Parameters<EngineInterface['ui']['resolve']>[0], { model, effort, parts, age }: View) {
   const { Box, Text } = $.ui.resolve(e)
@@ -136,14 +137,14 @@ function draw ($: EngineInterface, e: Parameters<EngineInterface['ui']['resolve'
       {parts.map((part, i) => (
         <Box key={part.label} flexDirection="row">
           {model || i > 0 ? <Text color={MUTED}>{BETWEEN}</Text> : null}
-          <Text color={MUTED}>{part.label} </Text>
+          <Text color={part.label === 'C' ? MUTED : ROSE}>{part.label} </Text>
           <Text color={colorFor(part.percent)}>{Math.round(part.percent)}%</Text>
           {part.detail ? <Text color={MUTED}> ({part.detail})</Text> : null}
         </Box>
       ))}
       {age ? <Text color={MUTED}>{BETWEEN}</Text> : null}
-      {age ? <Text color={AGE}>{age}</Text> : null}
-      {age ? <Text color={MUTED}>{AGO}</Text> : null}
+      {age ? <Text color={WHITE}>{age}</Text> : null}
+      {age ? <Text color={ROSE}>{AGO}</Text> : null}
     </Box>
   )
 }

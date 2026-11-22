@@ -16,8 +16,9 @@ const YELLOW = '#e5c07b'
 const ORANGE = '#e5904a'
 const RED = '#d75f5f'
 export const MUTED = '#a8a8a8'
-// How long ago the windows were read: a greyed rose, apart from the percentages' white, yellow, orange and red.
-export const AGE = '#b48a9b'
+// The account's own: the letters of its windows (H, W) and the word after their age, in a greyed rose
+// that groups the three apart from the session's context, and from the percentages' colors.
+export const ROSE = '#b48a9b'
 
 export const colorFor = (percent: number) => (percent >= 90 ? RED : percent >= 75 ? ORANGE : percent >= 50 ? YELLOW : WHITE)
 

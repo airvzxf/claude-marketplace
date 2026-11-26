@@ -124,3 +124,73 @@ test('/effort changes the effort shown at once, before and between prompts', asy
   await effort('xhigh')
   expect(await text()).toBe('Opus 5.5 Xhigh')
 })
+
+test('another login put on disk mid-session shows its own account and windows, never the ones before', async ($, on) => {
+  const clock = mock.clock(on, { now: NOW })
+  const stored: Record<string, unknown> = {}
+  on('store.get', (_, e) => ({ value: stored[e.key] }))
+  on('store.set', (_, e) => {
+    stored[e.key] = e.value
+    return { value: undefined }
+  })
+  mock.env(on, { HOME: '/home/someone' })
+  const ana = { oauthAccount: { accountUuid: 'a-1', emailAddress: 'ana.longname@example.com' } }
+  const bob = {
+    oauthAccount: { accountUuid: 'b-2', emailAddress: 'bob@example.org' },
+    // What the login record kept of this account's windows when it was last in use.
+    cachedUsageUtilization: {
+      accountUuid: 'b-2',
+      fetchedAtMs: NOW - 60_000,
+      utilization: { five_hour: { utilization: 10, resets_at: RESET_5H }, seven_day: { utilization: 70, resets_at: RESET_WEEK } }
+    }
+  }
+  let config: unknown = ana
+  let mtimeMs = 1
+  on('fs.stat', (_, e) => {
+    expect(e.path).toBe('/home/someone/.claude.json')
+    return { value: { kind: 'file', size: 1, mtimeMs, isLink: false } }
+  })
+  on('fs.read', () => ({ value: JSON.stringify(config) }))
+  // The windows the engine holds: those the last response reported.
+  let rateLimits = [{ kind: 'five_hour', percentUsed: 40, resetsAt: RESET_5H }]
+  on('settings.read', () => ({ value: {} }))
+  on('session.model', () => ({ value: 'claude-opus-5-5' }))
+  on('session.usage', () => ({ value: { startedAt: NOW, context: { window: 1_000_000 }, rateLimits } }))
+  on('session.start', (_, e) => ({ cwd: e.cwd }))
+  on('turn.step', async function * (_, e) {
+    rateLimits = [{ kind: 'five_hour', percentUsed: 15, resetsAt: RESET_5H }]
+    return { turnId: e.turnId, index: e.index, answer: '', toolUses: [], stopReason: 'end_turn', usage: null }
+  })
+  on('ui.render', ($, e) => {
+    const { Box } = $.ui.resolve(e)
+    return <Box />
+  })
+  const text = async () => {
+    const ui = await $.ui.mount({ plugin: 'usage-line', surface: 'terminal', component: 'SessionMode', props: { modes: [] } })
+    const texts = (await ui.findAll({ type: 'Text' })).map(node => node.text).join('')
+    await ui.unmount()
+    return texts
+  }
+  const login = async (next: unknown) => {
+    config = next
+    mtimeMs += 1
+    await clock.advance(2000)
+  }
+
+  await $.session.start({ cwd: '/', surface: 'terminal', isInteractive: true })
+  expect(await text()).toBe('ana.longna*@example* | Opus 5.5 | H 40% (27m 17s)')
+
+  // The engine still holds ana's 40% until a response comes under bob.
+  await login(bob)
+  expect(await text()).toBe('bob@example* | Opus 5.5 | H 10% (27m 15s) | W 70% (6d 19h) | 1m 2s ago')
+  expect(stored['limits:a-1']).toEqual([{ kind: 'five_hour', percentUsed: 40, resetsAt: RESET_5H }])
+
+  const step = $.turn.step({ turnId: 't1', index: 0, model: 'claude-opus-5-5', effort: 'medium', messageCount: 1 })
+  for await (const _ of step) { /* drained */ }
+  await step.result
+  await clock.advance(2000)
+  expect(await text()).toBe('bob@example* | Opus 5.5 Medium | H 15% (27m 13s) | W 70% (6d 19h) | 2s ago')
+
+  await login(ana)
+  expect(await text()).toBe('ana.longna*@example* | Opus 5.5 Medium | H 40% (27m 11s)')
+})

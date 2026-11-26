@@ -140,7 +140,13 @@ export function mergeLimits (...readings: readonly (readonly Limit[])[]): Limit[
   })
 }
 
-export type Part = { label: string; percent: number; detail: string }
+/** One percentage on the line; `percent` null for a window that is not open (`N/A`). */
+export type Part = { label: string; percent: number | null; detail: string }
+
+export const NOT_OPEN = 'N/A'
+
+/** "H 15%", or "H N/A" for a window that is not open. */
+export const percentOf = (part: Part) => (part.percent === null ? NOT_OPEN : `${Math.round(part.percent)}%`)
 
 /** What the line draws: the account, the model and its effort, each percentage, and how long ago the windows were read ('' unknown). */
 export type View = { account: string; model: string; effort: string; parts: Part[]; age: string }
@@ -151,11 +157,13 @@ export function partsOf ({ context, limits }: Line, now: number): Part[] {
   if (context) parts.push({ label: 'C', percent: context.percent, detail: `${tokens(context.tokens)}/${tokens(context.window)}` })
   for (const limit of limits) {
     const resetsIn = limit.resetsAt === undefined ? undefined : Date.parse(limit.resetsAt) - now
-    const hasReset = resetsIn !== undefined && resetsIn <= 0
+    // A window opens with the first request after the last one closed: until then, past its reset or
+    // with none and nothing used, there is no window to count.
+    const isOpen = resetsIn === undefined ? limit.percentUsed > 0 : resetsIn > 0
     parts.push({
       label: LABELS[limit.kind] ?? limit.kind,
-      percent: hasReset ? 0 : limit.percentUsed,
-      detail: resetsIn === undefined || hasReset ? '' : until(resetsIn)
+      percent: isOpen ? limit.percentUsed : null,
+      detail: resetsIn === undefined || !isOpen ? '' : until(resetsIn)
     })
   }
   return parts
@@ -182,7 +190,7 @@ export const textOf = (view: View) =>
   [
     ...(view.account ? [view.account] : []),
     ...(view.model ? [headOf(view)] : []),
-    ...view.parts.map(p => `${p.label} ${Math.round(p.percent)}%${p.detail ? ` (${p.detail})` : ''}`),
+    ...view.parts.map(p => `${p.label} ${percentOf(p)}${p.detail ? ` (${p.detail})` : ''}`),
     ...(view.age ? [`${view.age}${AGO}`] : [])
   ].join(BETWEEN)
 

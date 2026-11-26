@@ -1,7 +1,7 @@
 import { expect, test } from 'claude-code/testing'
 
 import { accountName, accountOf, colorFor, effortName, effortOfCommand, mergeLimits, modelName, roomNeeded, textOf, tokens, until, viewOf } from './format'
-import type { Line } from '../types'
+import type { Limit, Line } from '../types'
 
 const HOUR = 3_600_000
 const NOW = Date.parse('2026-11-02T12:00:00.000Z')
@@ -78,9 +78,12 @@ test('no age without a reading time or without windows', () => {
   expect(textOf(viewOf(lineOf({ model: 'Opus 5.5', readAt: NOW }), NOW))).toBe('Opus 5.5')
 })
 
-test('a window past its reset shows 0% and no countdown', () => {
-  const view = viewOf(lineOf({ limits: [{ kind: 'five_hour', percentUsed: 93, resetsAt: at(-1000) }] }), NOW)
-  expect(textOf(view)).toBe('H 0%')
+test('a window not open, past its reset or with none and nothing used, shows N/A and no countdown', () => {
+  const view = (limit: Limit) => textOf(viewOf(lineOf({ limits: [limit] }), NOW))
+  expect(view({ kind: 'five_hour', percentUsed: 93, resetsAt: at(-1000) })).toBe('H N/A')
+  expect(view({ kind: 'five_hour', percentUsed: 0 })).toBe('H N/A')
+  expect(view({ kind: 'five_hour', percentUsed: 0, resetsAt: at(HOUR) })).toBe('H 0% (1h 0m)')
+  expect(view({ kind: 'five_hour', percentUsed: 12 })).toBe('H 12%')
 })
 
 test('a stale reading never replaces a newer one, in either order', () => {

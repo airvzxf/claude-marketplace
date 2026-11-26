@@ -2,7 +2,7 @@ import { atom, read, update } from 'claude-code'
 import type { EngineInterface, Register, RenderNode, RenderViewport, SessionContextUsage } from 'claude-code'
 
 import type { Account, Limit, Line } from '../types'
-import { AGO, BETWEEN, MUTED, WHITE, ROSE, accountName, accountOf, colorFor, effortName, effortOfCommand, isEmpty, mergeLimits, modelName, roomNeeded, textOf, viewOf, widthOf, windowsOf } from './format'
+import { AGO, BETWEEN, MUTED, WHITE, ROSE, accountName, accountOf, colorFor, percentOf, effortName, effortOfCommand, isEmpty, mergeLimits, modelName, roomNeeded, textOf, viewOf, widthOf, windowsOf } from './format'
 import type { View } from './format'
 
 const EMPTY: Line = { account: '', model: '', effort: '', context: null, limits: [] }
@@ -207,7 +207,7 @@ function draw ($: EngineInterface, e: Parameters<EngineInterface['ui']['resolve'
         <Box key={part.label} flexDirection="row">
           {account || model || i > 0 ? <Text color={MUTED}>{BETWEEN}</Text> : null}
           <Text color={part.label === 'C' ? MUTED : ROSE}>{part.label} </Text>
-          <Text color={colorFor(part.percent)}>{Math.round(part.percent)}%</Text>
+          <Text color={part.percent === null ? MUTED : colorFor(part.percent)}>{percentOf(part)}</Text>
           {part.detail ? <Text color={MUTED}> ({part.detail})</Text> : null}
         </Box>
       ))}

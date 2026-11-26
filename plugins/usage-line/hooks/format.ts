@@ -1,6 +1,6 @@
 import type { SessionRateLimit } from 'claude-code'
 
-import type { Limit, Line } from '../types'
+import type { Account, Limit, Line } from '../types'
 
 export const WINDOWS = ['five_hour', 'seven_day']
 const LABELS: Record<string, string> = { five_hour: 'H', seven_day: 'W' }
@@ -68,6 +68,51 @@ export function until (ms: number) {
   return `${Math.floor(hours / 24)}d ${hours % 24}h`
 }
 
+// How much of an address the short form keeps: the start of the name, the domain's first label.
+const NAME_KEPT = 10
+
+/**
+ * The account as the line names it: `full`, the whole address; `short`, the start of its name and of
+ * its domain ("someone.lo*@example*"); `none` (or no address), ''.
+ */
+export function accountName (email: string, form: string) {
+  if (form === 'none' || email === '') return ''
+  if (form === 'full') return email
+  const at = email.lastIndexOf('@')
+  const name = at < 0 ? email : email.slice(0, at)
+  const short = name.length > NAME_KEPT ? `${name.slice(0, NAME_KEPT)}*` : name
+  if (at < 0) return short
+  const domain = email.slice(at + 1)
+  const dot = domain.indexOf('.')
+  return `${short}@${dot > 0 ? `${domain.slice(0, dot)}*` : domain}`
+}
+
+const isRecord = (value: unknown): value is Record<string, unknown> => typeof value === 'object' && value !== null
+
+/**
+ * The account a login record (`~/.claude.json`) holds: its `oauthAccount`, and the windows its
+ * `cachedUsageUtilization` names when they were fetched for that same account. Undefined with no login.
+ */
+export function accountOf (config: unknown): Account | undefined {
+  if (!isRecord(config) || !isRecord(config.oauthAccount)) return undefined
+  const { accountUuid, emailAddress } = config.oauthAccount
+  const id = typeof accountUuid === 'string' ? accountUuid : ''
+  const email = typeof emailAddress === 'string' ? emailAddress : ''
+  if (!id && !email) return undefined
+  const account: Account = { id: id || email, email }
+  const cached = config.cachedUsageUtilization
+  if (isRecord(cached) && cached.accountUuid === id && typeof cached.fetchedAtMs === 'number' && isRecord(cached.utilization)) {
+    const utilization = cached.utilization
+    const limits = WINDOWS.flatMap(kind => {
+      const found = utilization[kind]
+      if (!isRecord(found) || typeof found.utilization !== 'number') return []
+      return [{ kind, percentUsed: found.utilization, ...(typeof found.resets_at === 'string' ? { resetsAt: found.resets_at } : {}) }]
+    })
+    if (limits.length > 0) account.usage = { limits, readAt: cached.fetchedAtMs }
+  }
+  return account
+}
+
 export const windowsOf = (rateLimits: readonly SessionRateLimit[]): Limit[] =>
   WINDOWS.flatMap(kind => {
     const found = rateLimits.find(limit => limit.kind === kind)
@@ -97,8 +142,8 @@ export function mergeLimits (...readings: readonly (readonly Limit[])[]): Limit[
 
 export type Part = { label: string; percent: number; detail: string }
 
-/** What the line draws: the model and its effort, each percentage, and how long ago the windows were read ('' unknown). */
-export type View = { model: string; effort: string; parts: Part[]; age: string }
+/** What the line draws: the account, the model and its effort, each percentage, and how long ago the windows were read ('' unknown). */
+export type View = { account: string; model: string; effort: string; parts: Part[]; age: string }
 
 /** The percentages to draw, each with its letter and what goes in its parentheses. */
 export function partsOf ({ context, limits }: Line, now: number): Part[] {
@@ -118,13 +163,14 @@ export function partsOf ({ context, limits }: Line, now: number): Part[] {
 
 /** The line at a moment: the age is shown only beside the windows it dates. */
 export const viewOf = (line: Line, now: number): View => ({
+  account: line.account,
   model: line.model,
   effort: line.effort,
   parts: partsOf(line, now),
   age: line.readAt === undefined || line.limits.length === 0 ? '' : until(now - line.readAt)
 })
 
-export const isEmpty = (view: View) => !view.model && view.parts.length === 0
+export const isEmpty = (view: View) => !view.account && !view.model && view.parts.length === 0
 
 /** The model's name, then its effort after a space. */
 export const headOf = ({ model, effort }: View) => (model && effort ? `${model} ${effort}` : model)
@@ -134,6 +180,7 @@ export const AGO = ' ago'
 /** The line as plain text: what tells the countdown a redraw is due. */
 export const textOf = (view: View) =>
   [
+    ...(view.account ? [view.account] : []),
     ...(view.model ? [headOf(view)] : []),
     ...view.parts.map(p => `${p.label} ${Math.round(p.percent)}%${p.detail ? ` (${p.detail})` : ''}`),
     ...(view.age ? [`${view.age}${AGO}`] : [])

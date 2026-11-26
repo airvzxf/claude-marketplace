@@ -1,12 +1,12 @@
 import { expect, test } from 'claude-code/testing'
 
-import { colorFor, effortName, effortOfCommand, mergeLimits, modelName, roomNeeded, textOf, tokens, until, viewOf } from './format'
+import { accountName, accountOf, colorFor, effortName, effortOfCommand, mergeLimits, modelName, roomNeeded, textOf, tokens, until, viewOf } from './format'
 import type { Line } from '../types'
 
 const HOUR = 3_600_000
 const NOW = Date.parse('2026-11-02T12:00:00.000Z')
 const at = (ms: number) => new Date(NOW + ms).toISOString()
-const lineOf = (line: Partial<Line>): Line => ({ model: '', effort: '', context: null, limits: [], ...line })
+const lineOf = (line: Partial<Line>): Line => ({ account: '', model: '', effort: '', context: null, limits: [], ...line })
 
 test('the model id reads as its family and version', () => {
   expect(modelName('claude-opus-5-5')).toBe('Opus 5.5')
@@ -112,4 +112,47 @@ test('the room the line asks for does not change as the seconds go by', () => {
   expect(roomNeeded(line(27 * 60_000 + 9_000))).toBe(roomNeeded(line(27 * 60_000 + 10_000)))
   expect(roomNeeded(line(59_000))).toBe(roomNeeded(line(9 * HOUR)))
   expect(roomNeeded(line(HOUR, 5_000))).toBe(roomNeeded(line(HOUR, 35 * 60_000 + 3_000)))
+})
+
+test('the account reads as its whole address, its short form or nothing', () => {
+  expect(accountName('someone.longname@example.com', 'full')).toBe('someone.longname@example.com')
+  expect(accountName('someone.longname@example.com', 'short')).toBe('someone.lo*@example*')
+  expect(accountName('ana@example.co.uk', 'short')).toBe('ana@example*')
+  expect(accountName('ana@localhost', 'short')).toBe('ana@localhost')
+  expect(accountName('someone.longname@example.com', 'none')).toBe('')
+  expect(accountName('', 'full')).toBe('')
+})
+
+test('the login record names its account, and the windows it fetched for that account only', () => {
+  const utilization = {
+    five_hour: { utilization: 48, resets_at: at(HOUR) },
+    seven_day: { utilization: 36, resets_at: at(50 * HOUR) },
+    seven_day_opus: null
+  }
+  const oauthAccount = { accountUuid: 'a-1', emailAddress: 'ana@example.com', displayName: 'Ana' }
+  expect(accountOf({ oauthAccount, cachedUsageUtilization: { accountUuid: 'a-1', fetchedAtMs: NOW, utilization } })).toEqual({
+    id: 'a-1',
+    email: 'ana@example.com',
+    usage: {
+      limits: [
+        { kind: 'five_hour', percentUsed: 48, resetsAt: at(HOUR) },
+        { kind: 'seven_day', percentUsed: 36, resetsAt: at(50 * HOUR) }
+      ],
+      readAt: NOW
+    }
+  })
+  // Windows fetched for another account are not this one's.
+  expect(accountOf({ oauthAccount, cachedUsageUtilization: { accountUuid: 'b-2', fetchedAtMs: NOW, utilization } })).toEqual({
+    id: 'a-1',
+    email: 'ana@example.com'
+  })
+  expect(accountOf({ oauthAccount: { emailAddress: 'ana@example.com' } })).toEqual({ id: 'ana@example.com', email: 'ana@example.com' })
+  expect(accountOf({})).toBeUndefined()
+  expect(accountOf(null)).toBeUndefined()
+})
+
+test('the account comes first on the line', () => {
+  const view = viewOf(lineOf({ account: 'ana@example*', model: 'Opus 5.5', effort: 'Medium' }), NOW)
+  expect(textOf(view)).toBe('ana@example* | Opus 5.5 Medium')
+  expect(textOf(viewOf(lineOf({ account: 'ana@example*' }), NOW))).toBe('ana@example*')
 })

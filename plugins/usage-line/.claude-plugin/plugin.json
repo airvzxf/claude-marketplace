@@ -1,11 +1,20 @@
 {
   "name": "usage-line",
-  "version": "0.3.0",
-  "description": "Model and effort, context window and subscription usage (5-hour and weekly windows, and how old the reading is) in one line above the prompt.",
+  "version": "0.4.0",
+  "description": "The active account, model and effort, context window and subscription usage (5-hour and weekly windows, and how old the reading is) in one line above the prompt.",
   "author": { "name": "Israel Roldan", "url": "https://github.com/airvzxf" },
   "homepage": "https://github.com/airvzxf/claude-marketplace",
   "repository": "https://github.com/airvzxf/claude-marketplace",
   "license": "AGPL-3.0-only",
   "keywords": ["usage", "context", "rate-limits", "status", "mod"],
-  "types": "./types/index.d.ts"
+  "types": "./types/index.d.ts",
+  "userConfig": {
+    "account": {
+      "type": "string",
+      "title": "Account on the line",
+      "description": "How the line names the account signed in: full, the whole address; short, the start of its name and domain (someone.lo*@example*); none, left out.",
+      "options": ["short", "full", "none"],
+      "default": "short"
+    }
+  }
 }

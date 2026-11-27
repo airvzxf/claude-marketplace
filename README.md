@@ -28,6 +28,44 @@ The numbers are white: the age, and each percentage until it turns yellow from 5
 /plugin install usage-line --marketplace airvzxf/claude-marketplace
 ```
 
+## sessions
+
+`/sessions` lists every Claude Code session open on this machine, the one you type in marked with `▶`: whether it waits for you, works or idles, its name and title, the account it runs under, the model and effort, the version (and whether it needs a restart to reach the newest one installed), running shells, background tasks and agents, an open pull request and the folder. A header counts them and says when a newer Claude Code is released.
+
+```
+Claude sessions · 3 open · 1 waiting · 1 busy · 1 idle · account work · v2.1.332
+  ◆ waiting (input needed) api-3f Fix the retry loop                       41210 9b1c02aa   2m
+    ~/projects/api · Opus 5.5 high · work · 2.1.332 · bg 1
+▶ ● busy docs-7a Rewrite the install guide                                 51877 d4e5f6a7   5s
+    ~/projects/docs · Sonnet 5.5 medium · personal · 2.1.332 · running cmd
+```
+
+- `/sessions -s`: one line per session (status, name and title, folder, age).
+- `/sessions -l`: a third line with the session's summary, or the last prompt (`»`).
+- `/sessions --project`: only the sessions in this folder or below.
+- `/sessions --offline`: never ask the release server; the header says `offline`.
+
+The output shows only to you: it costs the model no context. The work is done by `bin/claude-sessions` (Python 3, standard library only), which reads `~/.claude/sessions/`, the transcripts and the processes; nothing leaves the machine but the release check, at most every 6 hours, in the background. To use it in a terminal too, link it into your `PATH` from a clone of this repository (`--json` and `--watch N` are there as well):
+
+```
+ln -s "$PWD/plugins/sessions/bin/claude-sessions" ~/.local/bin/claude-sessions
+```
+
+```
+/plugin install sessions --marketplace airvzxf/claude-marketplace
+```
+
+## Command-line tools
+
+Standalone commands in `tools/`, not plugins: link them into your `PATH` from a clone (`ln -s "$PWD/tools/<tool>/<tool>" ~/.local/bin/`).
+
+- **`claude-account`** (bash, `jq`, `curl`): keeps several Claude Code logins on one machine and swaps between them without the browser. Only the login (`~/.claude/.credentials.json`) and the account keys of `~/.claude.json` are swapped; settings, plugins, memory and sessions stay shared. `save <name>`, `use <name|auto>` (`auto` picks the login with the most room left), `list`, `whoami`, `usage [name]`. Saved logins are kept in `~/.local/share/claude-accounts/`, readable only by you. Open sessions re-read the login from disk, so a switch moves every open session to the new account.
+- **`claude-usage`** (bash, `jq`, `curl`, `flock`; Podman for logins that are not active; `notify-send` for `--notify`): tracks the 5-hour window and the weekly limit of each account saved with `claude-account` (and Antigravity through `agy`), keeps a history, and with `--keepalive` (the systemd user units in `tools/claude-usage/systemd/`) records each window as it closes and sends a minimal prompt after it ends to open the next one. `claude-usage --help` has the details.
+
+## License
+
+[AGPL-3.0-or-later](LICENSE).
+
 ## Releases
 
 Claude Code takes updates from the `version` in each plugin's `plugin.json` and in `.claude-plugin/marketplace.json`, not from tags: bump both together (CI checks they match). Each release is also a signed tag, `<plugin>-vX.Y.Z`, on the merge commit in `main`:

@@ -9,6 +9,13 @@
       "description": "The active account, model and effort, context window and subscription usage (5-hour and weekly windows, and how old the reading is) in one line above the prompt.",
       "version": "0.4.0",
       "category": "productivity"
+    },
+    {
+      "name": "sessions",
+      "source": "./plugins/sessions",
+      "description": "/sessions: every open Claude Code session on this machine, with its status, account, model and effort, shells, background tasks, agents, version and folder, in two lines each.",
+      "version": "0.1.0",
+      "category": "productivity"
     }
   ]
 }

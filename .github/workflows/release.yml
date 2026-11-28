@@ -2,7 +2,8 @@ name: release
 
 on:
   push:
-    # One tag per plugin release: `<plugin>-vX.Y.Z`, e.g. `usage-line-v0.2.0`,
+    # One tag per release of a plugin or of a command-line tool in tools/:
+    # `<name>-vX.Y.Z`, e.g. `usage-line-v0.2.0` or `claude-account-v1.0.0`,
     # signed on the maintainer's workstation:
     #   git tag -s usage-line-v0.2.0 -m 'release: usage-line 0.2.0' origin/main
     #   git push origin usage-line-v0.2.0
@@ -19,8 +20,9 @@ permissions:
   contents: read
 
 jobs:
-  # The tag names a plugin of the marketplace and a SemVer version, and at the
-  # tagged commit both manifests carry that version.
+  # The tag names a plugin of the marketplace (both manifests carry its version
+  # at the tagged commit) or a tool in tools/<name>/<name> (its `VERSION=` line
+  # carries it), and a SemVer version.
   validate-tag:
     name: 'Validate · tag and manifests'
     runs-on: ubuntu-latest
@@ -43,16 +45,25 @@ jobs:
         run: |
           set -euo pipefail
           [[ "$TAG" =~ ^([a-z0-9][a-z0-9-]*)-v([0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z]+(\.[0-9A-Za-z]+)*)?)$ ]] \
-            || { echo "ERROR: '$TAG' is not <plugin>-vX.Y.Z[-prerelease]"; exit 1; }
+            || { echo "ERROR: '$TAG' is not <name>-vX.Y.Z[-prerelease]"; exit 1; }
           PLUGIN="${BASH_REMATCH[1]}"
           VERSION="${BASH_REMATCH[2]}"
           SOURCE="$(jq -r --arg p "$PLUGIN" '.plugins[] | select(.name == $p) | .source' .claude-plugin/marketplace.json)"
-          [[ -n "$SOURCE" ]] || { echo "ERROR: no plugin '$PLUGIN' in .claude-plugin/marketplace.json"; exit 1; }
-          SOURCE="${SOURCE#./}"
-          LISTED="$(jq -r --arg p "$PLUGIN" '.plugins[] | select(.name == $p) | .version' .claude-plugin/marketplace.json)"
-          MANIFEST="$(jq -r .version "$SOURCE/.claude-plugin/plugin.json")"
-          [[ "$LISTED" == "$VERSION" && "$MANIFEST" == "$VERSION" ]] \
-            || { echo "ERROR: tag says $VERSION, marketplace.json says $LISTED, plugin.json says $MANIFEST"; exit 1; }
+          if [[ -n "$SOURCE" ]]; then
+            SOURCE="${SOURCE#./}"
+            LISTED="$(jq -r --arg p "$PLUGIN" '.plugins[] | select(.name == $p) | .version' .claude-plugin/marketplace.json)"
+            MANIFEST="$(jq -r .version "$SOURCE/.claude-plugin/plugin.json")"
+            [[ "$LISTED" == "$VERSION" && "$MANIFEST" == "$VERSION" ]] \
+              || { echo "ERROR: tag says $VERSION, marketplace.json says $LISTED, plugin.json says $MANIFEST"; exit 1; }
+          elif [[ -f "tools/$PLUGIN/$PLUGIN" ]]; then
+            SOURCE="tools/$PLUGIN"
+            SCRIPT="$(sed -nE 's/^(readonly )?VERSION="([^"]+)".*/\2/p' "$SOURCE/$PLUGIN" | head -n 1)"
+            [[ "$SCRIPT" == "$VERSION" ]] \
+              || { echo "ERROR: tag says $VERSION, $SOURCE/$PLUGIN says VERSION=\"$SCRIPT\""; exit 1; }
+          else
+            echo "ERROR: '$PLUGIN' is neither a plugin in .claude-plugin/marketplace.json nor a tool in tools/"
+            exit 1
+          fi
           {
             echo "TAG=${TAG}"
             echo "PLUGIN=${PLUGIN}"
@@ -140,7 +151,7 @@ jobs:
           ref: ${{ github.ref }}
           persist-credentials: false
 
-      - name: Package the plugin
+      - name: Package the plugin or tool
         env:
           TAG: ${{ needs.validate-tag.outputs.tag }}
           SOURCE: ${{ needs.validate-tag.outputs.source }}
@@ -148,7 +159,7 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p dist
-          # Only what git tracks, rooted at the plugin's own folder.
+          # Only what git tracks, rooted at the plugin's or tool's own folder.
           git archive --format=zip --prefix="${PLUGIN}/" -o "dist/${TAG}.zip" "${TAG}:${SOURCE}"
           git archive --format=tar.gz --prefix="${PLUGIN}/" -o "dist/${TAG}.tar.gz" "${TAG}:${SOURCE}"
           (cd dist && sha256sum ./*.zip ./*.tar.gz > SHA256SUMS)

@@ -1,8 +1,8 @@
 [Unit]
-Description=Revisar las ventanas de todas las cuentas cada 30–60 min (aleatorio)
+Description=Check the windows of every account every 30-60 min (randomized)
 
 [Timer]
-# OnCalendar nunca queda "elapsed" (OnBootSec+OnUnitActiveSec se quedó muerto tras un reinicio).
+# OnCalendar never stays "elapsed" (OnBootSec+OnUnitActiveSec stopped firing after a reboot).
 OnStartupSec=3min
 OnCalendar=*:0/30
 RandomizedDelaySec=30min

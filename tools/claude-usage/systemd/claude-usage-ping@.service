@@ -1,7 +1,7 @@
 [Unit]
-Description=Evento de la ventana de 5 h de %i (cierre o ping)
+Description=5-hour window event of %i (close or ping)
 After=network-online.target
-# Reintenta si falla (p. ej. sin red al arrancar), máx. 4 veces por hora.
+# Retry on failure (e.g. no network at boot), at most 4 times an hour.
 StartLimitIntervalSec=1h
 StartLimitBurst=4
 

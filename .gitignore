@@ -1,2 +1,6 @@
 # Types the Claude Code engine lays beside a loaded mod
 plugins/*/.claude-plugin/types/
+
+# Python bytecode
+__pycache__/
+*.pyc

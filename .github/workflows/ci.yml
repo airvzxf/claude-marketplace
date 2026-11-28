@@ -105,7 +105,7 @@ jobs:
       - name: The Python tools compile and answer --help
         run: |
           set -euo pipefail
-          python3 -m py_compile plugins/sessions/bin/claude-sessions
+          PYTHONDONTWRITEBYTECODE=1 python3 -c "import ast, sys; ast.parse(open(sys.argv[1]).read())" plugins/sessions/bin/claude-sessions
           python3 plugins/sessions/bin/claude-sessions --help >/dev/null
 
   actionlint:

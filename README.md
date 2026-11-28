@@ -59,7 +59,7 @@ ln -s "$PWD/plugins/sessions/bin/claude-sessions" ~/.local/bin/claude-sessions
 
 Standalone commands in `tools/`, not plugins: link them into your `PATH` from a clone (`ln -s "$PWD/tools/<tool>/<tool>" ~/.local/bin/`).
 
-- **`claude-account`** (bash, `jq`, `curl`): keeps several Claude Code logins on one machine and swaps between them without the browser. Only the login (`~/.claude/.credentials.json`) and the account keys of `~/.claude.json` are swapped; settings, plugins, memory and sessions stay shared. `save <name>`, `use <name|auto>` (`auto` picks the login with the most room left), `list`, `whoami`, `usage [name]`. Saved logins are kept in `~/.local/share/claude-accounts/`, readable only by you. Open sessions re-read the login from disk, so a switch moves every open session to the new account.
+- **`claude-account`** (bash, `jq`, `curl`): keeps several Claude Code logins on one machine and swaps between them without the browser. Only the login (`~/.claude/.credentials.json`) and the account keys of `~/.claude.json` are swapped; settings, plugins, memory and sessions stay shared. `save <name>`, `use <name|auto>` (`auto` picks the login with the most room left), `list` (with each login's open sessions when `claude-sessions` is in your `PATH`), `whoami`, `usage [name]`, `--version`. Saved logins are kept in `~/.local/share/claude-accounts/`, readable only by you. Open sessions re-read the login from disk, so a switch moves every open session to the new account.
 - **`claude-usage`** (bash, `jq`, `curl`, `flock`; Podman for logins that are not active; `notify-send` for `--notify`): tracks the 5-hour window and the weekly limit of each account saved with `claude-account` (and Antigravity through `agy`), keeps a history, and with `--keepalive` (the systemd user units in `tools/claude-usage/systemd/`) records each window as it closes and sends a minimal prompt after it ends to open the next one. `claude-usage --help` has the details.
 
 ## License
@@ -68,7 +68,7 @@ Standalone commands in `tools/`, not plugins: link them into your `PATH` from a 
 
 ## Releases
 
-Claude Code takes updates from the `version` in each plugin's `plugin.json` and in `.claude-plugin/marketplace.json`, not from tags: bump both together (CI checks they match). For `sessions`, also bump `VERSION` in `plugins/sessions/bin/claude-sessions`: the unit tests (`python3 -m unittest discover -s tests`) check it matches. Each release is also a signed tag, `<plugin>-vX.Y.Z`, on the merge commit in `main`:
+Claude Code takes updates from the `version` in each plugin's `plugin.json` and in `.claude-plugin/marketplace.json`, not from tags: bump both together (CI checks they match). For `sessions`, also bump `VERSION` in `plugins/sessions/bin/claude-sessions`: the unit tests (`python3 -m unittest discover -s tests`, which also run `claude-account` and `claude-usage` in a throwaway `HOME`) check it matches. Each release is also a signed tag, `<plugin>-vX.Y.Z`, on the merge commit in `main`:
 
 ```
 git fetch origin

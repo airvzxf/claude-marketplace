@@ -24,7 +24,7 @@ import time
 import unicodedata
 from pathlib import Path
 
-VERSION = "0.1.0"
+VERSION = "0.1.5"
 HOME = Path.home()
 CLAUDE_DIR = Path(os.environ.get("CLAUDE_CONFIG_DIR") or HOME / ".claude")
 STATE_FILE = (Path(os.environ["CLAUDE_CONFIG_DIR"]) / ".claude.json"
@@ -351,6 +351,24 @@ def pretty_model(m: str | None) -> str:
 
 # ---------------------------------------------------------------- collect
 
+def shown_status(x: dict, asked: float) -> str:
+    """The status to show for a session row built by collect().
+
+    asked is when /sessions started (seconds, 0 outside it). /sessions makes
+    its own session busy while it runs: a busy state that began then is the
+    command's own, and the session is idle again once the list shows.
+    "background" is a status Claude Code reports that is not one of the
+    known three, or an idle session that still runs tasks or agents.
+    """
+    st = x["status"]
+    if x["current"] and asked and st == "busy" and (x["status_since"] or 0) >= asked - 2:
+        st = "idle"
+    if st not in ("waiting", "busy", "idle") or (
+            st == "idle" and (x["background"] or x["agents_running"] or x["foreground"])):
+        st = "background"
+    return st
+
+
 def collect(project: str | None, offline: bool = False) -> dict:
     table = proc_table()
     if os.environ.get("CLAUDE_SESSIONS_COMMAND_AT"):
@@ -407,20 +425,10 @@ def collect(project: str | None, offline: bool = False) -> dict:
         })
 
     me = current_session_pid({x["pid"] for x in sessions}, table)
-    # /sessions makes its own session busy while it runs. The command says
-    # when it started (ms); a busy state that began then is the command's own,
-    # and the session is idle again once the list shows.
     asked = float(os.environ.get("CLAUDE_SESSIONS_COMMAND_AT") or 0) / 1000
     for x in sessions:
         x["current"] = x["pid"] == me
-        if (x["current"] and asked and x["status"] == "busy"
-                and (x["status_since"] or 0) >= asked - 2):
-            x["status"] = "idle"
-        # "background": a status Claude Code reports that is not one of the
-        # known three, or an idle session that still runs tasks or agents.
-        if x["status"] not in ("waiting", "busy", "idle") or (
-                x["status"] == "idle" and (x["background"] or x["agents_running"] or x["foreground"])):
-            x["status"] = "background"
+        x["status"] = shown_status(x, asked)
     sessions.sort(key=lambda x: (STATUS_ORDER.get(x["status"], 4), -(x["status_since"] or 0)))
     active_name = accs.get(active_uuid, {}).get("name") or active.get("displayName")
     released = released_version(offline)

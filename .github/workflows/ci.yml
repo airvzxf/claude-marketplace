@@ -108,7 +108,7 @@ jobs:
           PYTHONDONTWRITEBYTECODE=1 python3 -c "import ast, sys; ast.parse(open(sys.argv[1]).read())" plugins/sessions/bin/claude-sessions
           python3 plugins/sessions/bin/claude-sessions --help >/dev/null
 
-      - name: Python unit tests
+      - name: Unit tests (sessions script and shell tools)
         run: PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s tests -v
 
   actionlint:

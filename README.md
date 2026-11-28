@@ -68,7 +68,7 @@ Standalone commands in `tools/`, not plugins: link them into your `PATH` from a 
 
 ## Releases
 
-Claude Code takes updates from the `version` in each plugin's `plugin.json` and in `.claude-plugin/marketplace.json`, not from tags: bump both together (CI checks they match). For `sessions`, also bump `VERSION` in `plugins/sessions/bin/claude-sessions`: the unit tests (`python3 -m unittest discover -s tests`, which also run `claude-account` and `claude-usage` in a throwaway `HOME`) check it matches. Each release is also a signed tag, `<plugin>-vX.Y.Z`, on the merge commit in `main`:
+Claude Code takes updates from the `version` in each plugin's `plugin.json` and in `.claude-plugin/marketplace.json`, not from tags: bump both together (CI checks they match). For `sessions`, also bump `VERSION` in `plugins/sessions/bin/claude-sessions`: the unit tests (`python3 -m unittest discover -s tests`, which also run `claude-account` and `claude-usage` in a throwaway `HOME` and test how `claude-usage` reads its windows and schedules the keep-alive) check it matches. Each release is also a signed tag, `<plugin>-vX.Y.Z`, on the merge commit in `main`:
 
 ```
 git fetch origin

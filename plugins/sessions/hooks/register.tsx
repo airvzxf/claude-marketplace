@@ -23,8 +23,11 @@ export const register: Register = on => {
       return { text: `Unknown option ${unknown.join(' ')}. ${USAGE}`, isTextDisplayOnly: true }
     }
     const script = `${$.plugin.root}/bin/claude-sessions`
+    // `presentation.columns` is the whole terminal, but the transcript draws
+    // a command's output behind a gutter (`  ⎿  `, 5 cells): leave it that
+    // much and one cell more, so no row fills the last column and wraps.
     // Where nothing measured a terminal (a test, some hosts), draw 120 columns.
-    const columns = String(Math.max(60, (e.presentation?.columns ?? 122) - 2))
+    const columns = String(Math.max(60, (e.presentation?.columns ?? 126) - 6))
     try {
       const { exitCode, stdout, stderr } = await $.process.run(
         ['python3', script, '--color', 'never', ...args],

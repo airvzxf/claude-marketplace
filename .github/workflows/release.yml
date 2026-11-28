@@ -149,6 +149,9 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ github.ref }}
+          # The whole history and its tags: the notes start at the previous tag
+          # of the same plugin or tool.
+          fetch-depth: 0
           persist-credentials: false
 
       - name: Package the plugin or tool
@@ -165,12 +168,24 @@ jobs:
           (cd dist && sha256sum ./*.zip ./*.tar.gz > SHA256SUMS)
           cat dist/SHA256SUMS
 
+      # GitHub's generated notes compare with the previous tag of any plugin or
+      # tool; these list only the commits that touched this one's folder.
+      - name: Write the release notes
+        env:
+          TAG: ${{ needs.validate-tag.outputs.tag }}
+          SOURCE: ${{ needs.validate-tag.outputs.source }}
+          PLUGIN: ${{ needs.validate-tag.outputs.plugin }}
+        run: |
+          set -euo pipefail
+          bash .github/release-notes.sh "$TAG" "$PLUGIN" "$SOURCE" "$GITHUB_REPOSITORY" > "$RUNNER_TEMP/notes.md"
+          cat "$RUNNER_TEMP/notes.md"
+
       - uses: softprops/action-gh-release@8a0cd651e5b2365bd640854a3fa5dfc70e4875f3 # v3.0.4
         with:
           tag_name: ${{ needs.validate-tag.outputs.tag }}
           name: ${{ needs.validate-tag.outputs.plugin }} ${{ needs.validate-tag.outputs.version }}
           prerelease: ${{ contains(needs.validate-tag.outputs.version, '-') }}
-          generate_release_notes: true
+          body_path: ${{ runner.temp }}/notes.md
           files: |
             dist/*.zip
             dist/*.tar.gz

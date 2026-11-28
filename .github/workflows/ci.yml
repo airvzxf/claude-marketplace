@@ -115,7 +115,7 @@ jobs:
 
       - name: shellcheck the shell tools
         # shellcheck ships with the runner image.
-        run: shellcheck tools/claude-account/claude-account tools/claude-usage/claude-usage
+        run: shellcheck tools/claude-account/claude-account tools/claude-usage/claude-usage .github/release-notes.sh
 
       - name: The Python tools compile and answer --help
         run: |

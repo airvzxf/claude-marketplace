@@ -6,7 +6,8 @@
 #   claude-account save <name>     store the current login as <name>
 #   claude-account use <name>      save current login, then switch to <name>
 #   claude-account use auto        switch to the saved login with most room left
-#   claude-account list            saved logins (* = active)
+#   claude-account list            saved logins (* = active), with their open
+#                                  sessions when claude-sessions is installed
 #   claude-account whoami          active login: local files vs. server
 #   claude-account usage [name]    plan usage of one or all saved logins
 #
@@ -165,16 +166,33 @@ token_state() { # token_state <oauth.json-file-or-creds> <jq path>
   else echo "expired (Claude Code renews it on next start)"; fi
 }
 
+# "<account name>\t<open sessions>" per account, from claude-sessions;
+# nothing when it is not installed. Unknown accounts get an empty name.
+session_counts() {
+  command -v claude-sessions >/dev/null || return 0
+  claude-sessions --json --offline 2>/dev/null \
+    | jq -r '.sessions | group_by(.account // "") | .[] | "\(.[0].account // "")\t\(length)"' \
+    || true
+}
+
+plural() { [[ $1 == 1 ]] && echo "$1 $2" || echo "$1 ${2}s"; }
+
 do_list() {
-  local active d n; active=$(active_name)
+  local active d n counts c open; active=$(active_name); counts=$(session_counts)
   shopt -s nullglob
   for d in "$STORE"/*/; do
-    n=$(basename "$d")
-    printf '%s %-10s %-32s saved %s, token %s\n' "$([[ $n == "$active" ]] && echo '*' || echo ' ')" \
+    n=$(basename "$d"); open=""
+    if command -v claude-sessions >/dev/null; then
+      c=$(awk -F'\t' -v n="$n" '$1 == n { print $2 }' <<<"$counts")
+      open=", $(plural "${c:-0}" "open session")"
+    fi
+    printf '%s %-10s %-32s saved %s, token %s%s\n' "$([[ $n == "$active" ]] && echo '*' || echo ' ')" \
       "$n" "$(jq -r '.oauthAccount.emailAddress' "$d/account.json")" \
-      "$(cut -c1-16 "$d/saved-at")" "$(token_state "$d/oauth.json" '')"
+      "$(cut -c1-16 "$d/saved-at")" "$(token_state "$d/oauth.json" '')" "$open"
   done
   [[ -n $active ]] || echo "(active login $(current_email) is not saved)"
+  c=$(awk -F'\t' '$1 == "" { print $2 }' <<<"$counts")
+  [[ -z $c ]] || echo "($(plural "$c" "open session") of an account that is not saved)"
 }
 
 do_whoami() {

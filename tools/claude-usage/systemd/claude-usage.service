@@ -1,7 +1,7 @@
 [Unit]
-Description=Mantener activas las ventanas de 5 h (todas las cuentas)
+Description=Keep the 5-hour windows open (every account)
 After=network-online.target
-# Reintenta si falla (p. ej. sin red al arrancar), máx. 4 veces por hora.
+# Retry on failure (e.g. no network at boot), at most 4 times an hour.
 StartLimitIntervalSec=1h
 StartLimitBurst=4
 

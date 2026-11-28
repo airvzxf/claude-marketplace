@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-readonly VERSION="2.0.1"
+readonly VERSION="2.0.2"
 readonly BASE_DIR="${CLAUDE_USAGE_DIR:-${XDG_DATA_HOME:-${HOME}/.local/share}/claude-usage}"
 readonly CONF_FILE="${CLAUDE_USAGE_CONF:-${XDG_CONFIG_HOME:-${HOME}/.config}/claude-usage/accounts}"
 readonly ACCOUNTS_STORE="${CLAUDE_ACCOUNTS_DIR:-${HOME}/.local/share/claude-accounts}"
@@ -20,7 +20,7 @@ readonly RC_PING_SKIPPED=3
 readonly WINDOW_S=$((5 * 3600))
 readonly WEEK_S=$((7 * 86400))
 
-# Cuenta en curso; select_account los fija antes de cualquier otra cosa.
+# Current account; select_account sets it before anything else.
 ACCT=""
 PROVIDER=""
 DATA_DIR=""
@@ -34,7 +34,7 @@ die() {
   exit "${2:-1}"
 }
 
-# Va a stderr para no contaminar salidas capturadas con $(...); el journal lo recoge igual.
+# Goes to stderr so it does not pollute output captured with $(...); the journal still collects it.
 log() {
   printf '[%(%Y-%m-%d %H:%M:%S)T] %s%s\n' -1 "${ACCT:+[${ACCT}] }" "${1}" >&2
 }
@@ -116,7 +116,7 @@ now_epoch() {
   printf '%(%s)T' -1
 }
 
-# Lista de cuentas: "nombre proveedor" por línea; # y líneas vacías se ignoran.
+# Account list: "name provider" per line; # and blank lines are ignored.
 load_accounts() {
   local name provider rest
   ACCOUNTS=()
@@ -147,14 +147,14 @@ select_account() {
 }
 
 # ---------------------------------------------------------------------------
-# Claude: la cuenta activa usa ~/.claude tal cual; las demás, un contenedor.
+# Claude: the active account uses ~/.claude as is; the others use a container.
 # ---------------------------------------------------------------------------
 
 store_email() {
   jq -r '.oauthAccount.emailAddress // empty' "${ACCOUNTS_STORE}/${ACCT}/account.json" 2>/dev/null || true
 }
 
-# ¿Es esta cuenta la que está ahora en ~/.claude? Se compara por e-mail, igual que claude-account.
+# Is this the account currently in ~/.claude? Compared by e-mail, like claude-account.
 claude_is_active() {
   local mine live
   mine=$(store_email)
@@ -162,7 +162,7 @@ claude_is_active() {
   [[ -n "${mine}" && "${mine}" == "${live}" ]]
 }
 
-# expiresAt (ms) del token en $1 ($2 = ruta jq del objeto oauth); 0 si no hay.
+# expiresAt (ms) of the token in $1 ($2 = jq path of the oauth object); 0 if none.
 oauth_expiry() {
   local v
   v=$(jq -r "${2}.expiresAt // 0" "${1}" 2>/dev/null) || v=0
@@ -170,8 +170,8 @@ oauth_expiry() {
   printf '%s' "${v}"
 }
 
-# Copia al sandbox el login guardado si es más nuevo que el del sandbox (p. ej. porque
-# la cuenta estuvo activa y claude-account guardó tokens renovados al cambiar).
+# Copy the saved login into the sandbox if it is newer than the sandbox's (e.g. because
+# the account was active and claude-account saved renewed tokens when switching).
 sandbox_sync_in() {
   local store="${ACCOUNTS_STORE}/${ACCT}" creds="${SANDBOX}/.claude/.credentials.json" tmp
   [[ -f "${store}/oauth.json" && -f "${store}/account.json" ]] \
@@ -191,8 +191,8 @@ sandbox_sync_in() {
   fi
 }
 
-# Si Claude renovó el token dentro del sandbox, el refresh token anterior deja de valer:
-# se guarda el nuevo en claude-account para que un 'use' posterior no restaure uno muerto.
+# If Claude renewed the token inside the sandbox, the old refresh token stops working:
+# the new one is saved in claude-account so a later 'use' does not restore a dead one.
 sandbox_sync_out() {
   local store="${ACCOUNTS_STORE}/${ACCT}/oauth.json" creds="${SANDBOX}/.claude/.credentials.json" tmp
   [[ -s "${creds}" ]] || return 0
@@ -215,8 +215,8 @@ claude_token() {
   fi
 }
 
-# Ejecuta claude con "$@" para la cuenta: en el host si es la activa, si no en Podman
-# con el sandbox como HOME. stdout = salida de claude; stderr a $CLAUDE_ERR.
+# Run claude with "$@" for the account: on the host if it is the active one, else in Podman
+# with the sandbox as HOME. stdout = claude's output; stderr goes to $CLAUDE_ERR.
 claude_run() {
   local bin rc=0
   if claude_is_active; then
@@ -226,7 +226,7 @@ claude_run() {
   require_cmd podman
   bin=$(readlink -f "$(command -v claude)")
   ensure_data_dir
-  # Un solo proceso por sandbox: dos renovaciones a la vez invalidarían el refresh token.
+  # One process per sandbox: two renewals at once would invalidate the refresh token.
   exec 8>"${DATA_DIR}/sandbox.lock"
   flock -w 300 8 || die "sandbox of '${ACCT}' is busy" 7
   sandbox_sync_in
@@ -239,7 +239,7 @@ claude_run() {
   return "${rc}"
 }
 
-# Corre claude_run en un directorio temporal; deja la salida en RUN_OUT y el error en RUN_ERR.
+# Run claude_run in a temporary directory; leaves the output in RUN_OUT and the error in RUN_ERR.
 claude_exec() {
   local rc=0
   RUN_DIR=$(mktemp -d)
@@ -251,7 +251,7 @@ claude_exec() {
   return "${rc}"
 }
 
-# Imprime el JSON de uso. Retorna 2 si el token expiró (401), RC_RATE_LIMITED si es 429.
+# Print the usage JSON. Returns 2 if the token expired (401), RC_RATE_LIMITED on 429.
 fetch_usage_claude() {
   local token response code retry_after msg
   token=$(claude_token)
@@ -284,8 +284,8 @@ fetch_usage_claude() {
 }
 
 # ---------------------------------------------------------------------------
-# Antigravity: 'agy -p /usage' no gasta tokens y da los límites por grupo de modelos.
-# Se traduce al mismo formato que el API de Claude para reutilizar todo lo demás.
+# Antigravity: 'agy -p /usage' spends no tokens and gives limits per model group.
+# It is translated to the same format as the Claude API to reuse everything else.
 # ---------------------------------------------------------------------------
 
 fetch_usage_agy() {
@@ -321,8 +321,8 @@ ping_claude() {
       --model haiku --tools "" --strict-mcp-config --disable-slash-commands \
       --no-session-persistence --setting-sources "" \
       --system-prompt "Reply only: pong" --output-format json || rc=$?
-  # Un rechazo del servidor (p. ej. límite alcanzado) puede salir con código 0: se
-  # revisa is_error en la respuesta JSON.
+  # A server rejection (e.g. limit reached) may exit with code 0: check
+  # is_error in the JSON response.
   PING_SUMMARY=$(printf '%s' "${RUN_OUT}" | jq -r 'if .is_error then "error: \(.api_error_status // "-") \(.result // "")"
       else "ok: \(.result) (\((.usage.input_tokens // 0) + (.usage.output_tokens // 0)) tokens)" end' \
       2>/dev/null) || PING_SUMMARY="error: unreadable output: ${RUN_OUT:0:200} ${RUN_ERR}"
@@ -344,10 +344,10 @@ ping_agy() {
   return "${rc}"
 }
 
-# Freno de seguridad: nunca más de un ping cada MIN_PING_GAP_S, pase lo que pase.
-# Un ping legítimo ocurre una vez cada 5 h; si se repite antes, algo está mal.
-# El sello es last-ping (abre ventana) o last-refresh (solo renueva el token), para
-# que un ping de renovación justo antes del cierre no bloquee el ping de apertura.
+# Safety brake: never more than one ping per MIN_PING_GAP_S, no matter what.
+# A legitimate ping happens once every 5 h; if it repeats sooner, something is wrong.
+# The stamp is last-ping (opens a window) or last-refresh (only renews the token), so
+# that a renewal ping just before the close does not block the opening ping.
 do_ping() {
   local stamp="${DATA_DIR}/${1:-last-ping}" last now rc=0
   now=$(now_epoch)
@@ -379,8 +379,8 @@ do_ping() {
   printf '%(%Y-%m-%d %H:%M:%S)T\n' -1 >"${stamp}"
 }
 
-# Si el token de Claude expiró, un prompt lo renueva ('claude auth status' no lo hace:
-# solo lee el archivo). agy maneja su propio login.
+# If the Claude token expired, a prompt renews it ('claude auth status' does not:
+# it only reads the file). agy handles its own login.
 get_usage() {
   local response rc=0
   response=$(fetch_usage) || rc=$?
@@ -405,7 +405,7 @@ to_epoch() {
   fi
 }
 
-# Normaliza la respuesta a un registro plano: porcentajes usados y resets en epoch.
+# Normalize the response into a flat record: used percentages and resets as epoch.
 build_snapshot() {
   local response=$1 when=$2 now=$3 event=$4
   local fh_pct fh_reset wk_pct wk_reset
@@ -427,8 +427,8 @@ append_log() {
   chmod 600 "${LOG_FILE}" 2>/dev/null || true
 }
 
-# Deja en SNAP la última lectura del historial con ts=ahora, para que los tiempos
-# restantes se calculen bien (los porcentajes son los de esa lectura).
+# Leave in SNAP the last history reading with ts=now, so remaining times
+# are computed correctly (the percentages are those of that reading).
 load_cached_snapshot() {
   local last="" now
   now=$(now_epoch)
@@ -440,8 +440,8 @@ load_cached_snapshot() {
   SNAP_SOURCE="cache"
 }
 
-# Deja en SNAP la lectura actual del API. Si el API está limitado (429) usa la última
-# del historial. SNAP_SOURCE queda en "api" o "cache".
+# Leave in SNAP the current API reading. If the API is rate limited (429), use the last
+# one from the history. SNAP_SOURCE ends up as "api" or "cache".
 load_snapshot() {
   local event=$1 response rc=0 now
   response=$(get_usage) || rc=$?
@@ -459,9 +459,9 @@ load_snapshot() {
   log "using stored snapshot from ${SNAP_CACHED_FROM}"
 }
 
-# Fin de la ventana actual y de la semana: es lo único que necesita el keep-alive.
-# WIN_SOURCE: api (leído del API), estimated (ping + 5 h sin API), history (sin
-# window.json todavía: se toma de la última lectura del historial).
+# End of the current window and of the week: all the keep-alive needs.
+# WIN_SOURCE: api (read from the API), estimated (ping + 5 h, no API), history (no
+# window.json yet: taken from the last history reading).
 read_window_state() {
   local input filter='.resets_at // 0, .weekly_resets_at // 0, .source // "", .closed_for // 0, .week_closed_for // 0, .weekly_used_percent // 0'
   WIN_RESET=0
@@ -488,13 +488,13 @@ read_window_state() {
   [[ "${WIN_WEEK_USED}" =~ ^[0-9]+$ ]] || WIN_WEEK_USED=0
 }
 
-# Con el límite semanal agotado no tiene caso abrir ventanas de 5 h: no se podrían usar.
+# With the weekly limit exhausted there is no point opening 5 h windows: they could not be used.
 week_blocked() {
   (( WIN_WEEK_USED >= 100 && $(now_epoch) < WIN_WEEK_RESET + MARGIN_S ))
 }
 
-# Reescribe window.json de forma atómica aplicando un filtro jq sobre el contenido
-# actual, así los campos que no se tocan (p. ej. los marcadores de cierre) se conservan.
+# Rewrite window.json atomically by applying a jq filter to the current contents,
+# so untouched fields (e.g. the close markers) are preserved.
 update_state_file() {
   local current='{}' tmp
   ensure_data_dir
@@ -511,21 +511,21 @@ save_window_state() {
     '.resets_at = $r | .weekly_resets_at = $w | .source = $s | .updated_at = $u'
 }
 
-# Marca el cierre de la ventana (o semana) que termina en $2 como ya registrado. Así
-# ninguna otra ejecución lo repite, aunque caiga dentro de los mismos 2 min.
+# Mark the close of the window (or week) ending at $2 as already recorded, so
+# no other run repeats it, even within the same 2 min.
 mark_closed() {
   # shellcheck disable=SC2016  # $k, $v son variables de jq
   update_state_file --arg k "${1}" --argjson v "${2}" '.[$k] = $v'
 }
 
-# ¿Ya se registró el cierre que termina en $2? Tolera que el API mueva el fin unos minutos.
+# Was the close ending at $2 already recorded? Tolerates the API moving the end by a few minutes.
 is_closed() {
   local marker=$1 reset=$2 diff
   diff=$((marker - reset))
   (( marker > 0 && diff > -300 && diff < 300 ))
 }
 
-# Guarda el estado a partir de una lectura del API (solo si hay ventana activa).
+# Save the state from an API reading (only if there is an active window).
 save_state_from_snapshot() {
   local ts reset week week_used
   ts=$(printf '%s' "${1}" | jq -r '.ts')
@@ -535,7 +535,7 @@ save_state_from_snapshot() {
   if (( reset > ts )); then
     save_window_state "${reset}" "${week}" api
   fi
-  # La semana se actualiza siempre, haya o no ventana de 5 h activa.
+  # The week is always updated, whether or not a 5 h window is active.
   # shellcheck disable=SC2016  # $w, $u son variables de jq
   update_state_file --argjson w "${week}" --argjson u "${week_used}" \
     '.weekly_resets_at = $w | .weekly_used_percent = $u'
@@ -695,16 +695,16 @@ notify_state() {
   fh_pct=$(printf '%s' "${snap}" | jq -r '.five_hour_used_percent')
   fh_reset=$(printf '%s' "${snap}" | jq -r '.five_hour_resets_at')
   if (( fh_reset > now )); then
-    notify "${title:-${ACCT}: ${fh_pct}% de la ventana usado}" \
-      "Vence a las $(fmt_time_short "${fh_reset}") (en $(fmt_duration_short $((fh_reset - now))))"
+    notify "${title:-${ACCT}: ${fh_pct}% of the window used}" \
+      "Expires at $(fmt_time_short "${fh_reset}") (in $(fmt_duration_short $((fh_reset - now))))"
   else
-    notify "${title:-${ACCT}: sin ventana activa}"
+    notify "${title:-${ACCT}: no active window}"
   fi
 }
-# Cada cuenta tiene un solo timer de eventos (instancia de claude-usage-ping@.timer);
-# reprogramar = reescribir el OnCalendar de su drop-in. Así es imposible que se acumulen
-# eventos pendientes, y Persistent=true lo dispara al arrancar si la PC estaba apagada a
-# esa hora. Solo se recarga systemd si cambió la hora.
+# Each account has a single event timer (instance of claude-usage-ping@.timer);
+# rescheduling = rewriting the OnCalendar of its drop-in. This way pending events
+# cannot pile up, and Persistent=true fires it at boot if the PC was off at
+# that time. systemd is reloaded only if the time changed.
 schedule_event() {
   local epoch=$1 label=$2 when dropin_dir dropin tmp
   when=$(printf '%(%Y-%m-%d %H:%M:%S)T' "${epoch}")
@@ -716,7 +716,7 @@ schedule_event() {
   mkdir -p "${dropin_dir}"
   tmp=$(mktemp "${dropin}.XXXXXX")
   cat >"${tmp}" <<UNIT
-# Generado por claude-usage; se reescribe en cada reprogramación.
+# Generated by claude-usage; rewritten on every reschedule.
 [Timer]
 OnCalendar=${when}
 UNIT
@@ -740,14 +740,14 @@ UNIT
   log "next event: ${label} at ${when}"
 }
 
-# Antes del cierre toca registrarlo; después, el ping que abre la siguiente ventana.
-# Si el cierre semanal llega antes, ese va primero (sigue habiendo un solo timer).
-# Un cierre ya registrado en esta ejecución no se vuelve a programar.
+# Before the close, record it; after, the ping that opens the next window.
+# If the weekly close comes first, it goes first (there is still a single timer).
+# A close already recorded in this run is not scheduled again.
 schedule_next() {
   local now at label
   now=$(now_epoch)
   if week_blocked; then
-    # Semana agotada: nada que registrar ni abrir hasta el reinicio semanal.
+    # Week exhausted: nothing to record or open until the weekly reset.
     at=$((WIN_WEEK_RESET + MARGIN_S)); label=ping
   elif (( now < WIN_RESET - CLOSE_LEAD_S )) && ! is_closed "${WIN_CLOSED_FOR}" "${WIN_RESET}"; then
     at=$((WIN_RESET - CLOSE_LEAD_S)); label=close
@@ -761,8 +761,8 @@ schedule_next() {
   schedule_event "${at}" "${label}"
 }
 
-# Lee el API y, si respondió, guarda la lectura en el historial y actualiza el fin de
-# ventana. Con 429 no guarda nada: la lectura del historial ya está ahí.
+# Read the API and, if it responded, save the reading in the history and update the end of
+# the window. On 429 nothing is saved: the history reading is already there.
 refresh_from_api() {
   local event=$1 ts reset pct
   load_snapshot "${event}"
@@ -796,14 +796,14 @@ open_window() {
   if (( WIN_RESET <= $(now_epoch) )); then
     (( pinged_at > 0 )) || die "no active 5h window and the ping was skipped" 8
     [[ "${SNAP_SOURCE}" == "cache" ]] || die "API shows no active 5h window after the ping" 5
-    # Sin API no sabemos el fin real: la ventana empezó con el ping, así que se estima
-    # en ping + 5 h. El servicio periódico lo confirma en cuanto el API responda.
+    # Without the API we do not know the real end: the window started with the ping, so it is estimated
+    # as ping + 5 h. The periodic service confirms it as soon as the API responds.
     save_window_state $((pinged_at + WINDOW_S)) "${WIN_WEEK_RESET}" estimated
     read_window_state
     log "window end estimated from ping time: $(fmt_time_short "${WIN_RESET}") (usage API unavailable)"
   fi
   if (( pinged_at > 0 )); then
-    notify "${ACCT}: nueva ventana de 5 h iniciada" "Vence a las $(fmt_time_short "${WIN_RESET}")"
+    notify "${ACCT}: new 5 h window started" "Expires at $(fmt_time_short "${WIN_RESET}")"
   fi
 }
 
@@ -811,7 +811,7 @@ run_keepalive() {
   require_cmd systemctl stat cmp
   ensure_data_dir
 
-  # Evita ejecuciones simultáneas (timer periódico + timer de eventos).
+  # Prevents simultaneous runs (periodic timer + event timer).
   exec 9>"${DATA_DIR}/lock"
   flock -w 300 9 || die "another claude-usage instance is still running" 7
 
@@ -844,7 +844,7 @@ run_keepalive() {
     open_window
   fi
 
-  # Una lectura de cierre de 5 h en esta misma ejecución ya cubre la semana.
+  # A 5 h close reading in this same run already covers the week.
   now=$(now_epoch)
   if (( now >= WIN_WEEK_RESET - CLOSE_LEAD_S && now < WIN_WEEK_RESET )) \
       && ! is_closed "${WIN_WEEK_CLOSED_FOR}" "${WIN_WEEK_RESET}"; then
@@ -857,7 +857,7 @@ run_keepalive() {
 
   if (( NOTIFY_ENABLED )); then
     now=$(now_epoch)
-    notify "${ACCT}: la ventana vence a las $(fmt_time_short "${WIN_RESET}")" \
+    notify "${ACCT}: the window expires at $(fmt_time_short "${WIN_RESET}")" \
       "En $(fmt_duration_short $((WIN_RESET - now)))"
   fi
   schedule_next
@@ -1010,7 +1010,7 @@ main() {
     provider=${entry#*:}
     [[ -z "${ONLY_ACCOUNT}" || "${ONLY_ACCOUNT}" == "${name}" ]] || continue
     found=1
-    # Cada cuenta en un subshell: un error (die) en una no detiene a las demás.
+    # Each account in a subshell: an error (die) in one does not stop the others.
     rc=0
     (
       select_account "${name}" "${provider}"

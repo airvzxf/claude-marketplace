@@ -1,6 +1,6 @@
-# La hora (OnCalendar) la escribe claude-usage en claude-usage-ping@<cuenta>.timer.d/schedule.conf.
+# claude-usage writes the time (OnCalendar) to claude-usage-ping@<account>.timer.d/schedule.conf.
 [Unit]
-Description=Evento de la ventana de 5 h de %i (cierre o ping)
+Description=5-hour window event of %i (close or ping)
 
 [Timer]
 AccuracySec=1s

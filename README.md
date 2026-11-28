@@ -76,4 +76,4 @@ git tag -s usage-line-v0.2.0 -m 'release: usage-line 0.2.0' origin/main
 git push origin usage-line-v0.2.0
 ```
 
-The `release` workflow checks that the tag is on `main`, that it is signed by a key in `.github/trusted-signers` and that both manifests (for a tool, its `VERSION=` line) carry its version, then publishes a GitHub release with the plugin's or tool's folder as `.zip` and `.tar.gz` and their `SHA256SUMS`.
+The `release` workflow checks that the tag is on `main`, that it is signed by a key in `.github/trusted-signers` and that both manifests (for a tool, its `VERSION=` line) carry its version, then publishes a GitHub release with the plugin's or tool's folder as `.zip` and `.tar.gz` and their `SHA256SUMS`. Its notes (`.github/release-notes.sh`) list the commits that touched that folder since the previous tag of the same plugin or tool.

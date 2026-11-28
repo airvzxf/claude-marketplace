@@ -1,6 +1,6 @@
 {
   "name": "sessions",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "description": "/sessions: every open Claude Code session on this machine, with its status, account, model and effort, shells, background tasks, agents, version and folder, in two lines each.",
   "author": { "name": "Israel Roldan", "url": "https://github.com/airvzxf" },
   "homepage": "https://github.com/airvzxf/claude-marketplace",

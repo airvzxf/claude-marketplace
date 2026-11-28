@@ -30,7 +30,7 @@ The numbers are white: the age, and each percentage until it turns yellow from 5
 
 ## sessions
 
-`/sessions` lists every Claude Code session open on this machine, the one you type in marked with `▶`: whether it waits for you, works or idles, its name and title, the account it runs under, the model and effort, the version (and whether it needs a restart to reach the newest one installed), running shells, background tasks and agents, an open pull request and the folder. A header counts them and says when a newer Claude Code is released.
+`/sessions` lists every Claude Code session open on this machine, the one you type in marked with `▶`: whether it waits for you, works, has only background work left (a blue `●`, listed right under the busy ones) or idles, its name and title, the account it runs under, the model and effort, the version (and whether it needs a restart to reach the newest one installed), running shells, background tasks and agents, an open pull request and the folder. A header counts them and says when a newer Claude Code is released.
 
 ```
 Claude sessions · 3 open · 1 waiting · 1 busy · 1 idle · account work · v2.1.332

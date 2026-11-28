@@ -1,6 +1,6 @@
 {
   "name": "usage-line",
-  "version": "0.4.0",
+  "version": "0.4.1",
   "description": "The active account, model and effort, context window and subscription usage (5-hour and weekly windows, and how old the reading is) in one line above the prompt.",
   "author": { "name": "Israel Roldan", "url": "https://github.com/airvzxf" },
   "homepage": "https://github.com/airvzxf/claude-marketplace",

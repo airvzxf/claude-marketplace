@@ -4,6 +4,11 @@ on:
   pull_request:
   push:
     branches: [main]
+  # Weekly, the plugins are also checked against the newest Claude Code, so a
+  # release that breaks them shows up before the pinned version is bumped.
+  schedule:
+    - cron: '17 6 * * 1'
+  workflow_dispatch:
 
 permissions:
   contents: read
@@ -11,8 +16,9 @@ permissions:
 env:
   # The Claude Code release whose `claude plugin validate` and `claude plugin test`
   # check the plugins. It needs no login or API key. Bump it by hand: Dependabot
-  # does not follow a global npm install.
-  CLAUDE_CODE_VERSION: 2.1.316
+  # does not follow a global npm install. Scheduled and manual runs use the
+  # newest release instead and warn when it is ahead of this one.
+  CLAUDE_CODE_VERSION: 2.1.332
 
 jobs:
   manifests:
@@ -70,7 +76,16 @@ jobs:
 
       - name: Install Claude Code
         # Its postinstall fetches the native binary for the runner, so scripts stay on.
-        run: npm install --global "@anthropic-ai/claude-code@${CLAUDE_CODE_VERSION}"
+        env:
+          WANT: ${{ (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') && 'latest' || env.CLAUDE_CODE_VERSION }}
+        run: |
+          set -euo pipefail
+          npm install --global "@anthropic-ai/claude-code@${WANT}"
+          installed="$(claude --version | awk '{print $1}')"
+          echo "Claude Code ${installed} (pinned ${CLAUDE_CODE_VERSION})"
+          if [[ "$installed" != "$CLAUDE_CODE_VERSION" ]]; then
+            echo "::warning file=.github/workflows/ci.yml::Claude Code ${installed} is out; CLAUDE_CODE_VERSION is still ${CLAUDE_CODE_VERSION}"
+          fi
 
       - name: Validate the marketplace
         run: claude plugin validate .

@@ -106,6 +106,18 @@ def task_id(pid: int) -> str | None:
     return None
 
 
+def own_chain(table) -> set[int]:
+    """This process and its parents: under /sessions, not the session's work."""
+    out, pid = set(), os.getpid()
+    while pid in table and pid not in out:
+        out.add(pid)
+        pid = table[pid][0]
+    return out
+
+
+OWN_CHAIN: set[int] = set()
+
+
 def proc_summary(table, pid, bg_ids: set[str], busy: bool) -> dict:
     """Commands the session runs: background tasks, the foreground one, helpers.
 
@@ -115,6 +127,8 @@ def proc_summary(table, pid, bg_ids: set[str], busy: bool) -> dict:
     """
     bg, fg, helpers = [], 0, []
     for c in children(table, pid):
+        if c in OWN_CHAIN:                # this listing (and any shell around it)
+            continue
         comm = table[c][1]
         if comm in SHELLS:
             tid = task_id(c)
@@ -339,6 +353,8 @@ def pretty_model(m: str | None) -> str:
 
 def collect(project: str | None, offline: bool = False) -> dict:
     table = proc_table()
+    if os.environ.get("CLAUDE_SESSIONS_COMMAND_AT"):
+        OWN_CHAIN.update(own_chain(table))
     accs = accounts()
     state = read_json(STATE_FILE) or {}
     active = (state.get("oauthAccount") or {})
@@ -390,15 +406,21 @@ def collect(project: str | None, offline: bool = False) -> dict:
                            s.get("status") == "busy"),
         })
 
+    me = current_session_pid({x["pid"] for x in sessions}, table)
+    # /sessions makes its own session busy while it runs. The command says
+    # when it started (ms); a busy state that began then is the command's own,
+    # and the session is idle again once the list shows.
+    asked = float(os.environ.get("CLAUDE_SESSIONS_COMMAND_AT") or 0) / 1000
     for x in sessions:
+        x["current"] = x["pid"] == me
+        if (x["current"] and asked and x["status"] == "busy"
+                and (x["status_since"] or 0) >= asked - 2):
+            x["status"] = "idle"
         # "background": a status Claude Code reports that is not one of the
         # known three, or an idle session that still runs tasks or agents.
         if x["status"] not in ("waiting", "busy", "idle") or (
                 x["status"] == "idle" and (x["background"] or x["agents_running"] or x["foreground"])):
             x["status"] = "background"
-    me = current_session_pid({x["pid"] for x in sessions}, table)
-    for x in sessions:
-        x["current"] = x["pid"] == me
     sessions.sort(key=lambda x: (STATUS_ORDER.get(x["status"], 4), -(x["status_since"] or 0)))
     active_name = accs.get(active_uuid, {}).get("name") or active.get("displayName")
     released = released_version(offline)

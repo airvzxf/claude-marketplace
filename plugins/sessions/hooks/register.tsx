@@ -31,7 +31,9 @@ export const register: Register = on => {
     try {
       const { exitCode, stdout, stderr } = await $.process.run(
         ['python3', script, '--color', 'never', ...args],
-        { timeoutMs: 15000, env: { COLUMNS: columns } },
+        // The time it was asked lets the script tell this run's own busy
+        // state from real work, and show this session idle as it will be.
+        { timeoutMs: 15000, env: { COLUMNS: columns, CLAUDE_SESSIONS_COMMAND_AT: String(Date.now()) } },
       )
       const text = exitCode === 0 ? stdout.trimEnd() : `claude-sessions failed (${exitCode}): ${stderr.trim()}`
       return { text, isTextDisplayOnly: true }

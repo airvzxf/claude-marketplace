@@ -1,0 +1,591 @@
+#!/usr/bin/env python3
+"""claude-sessions: one colored view of every open Claude Code session.
+
+  claude-sessions              every live session, 2 lines each
+  claude-sessions -l           add a third line: summary or last prompt
+  claude-sessions --json       machine-readable output (for scripts/plugins)
+  claude-sessions --watch N    redraw every N seconds (Ctrl-C to stop)
+  claude-sessions --project [PATH]
+                               only sessions whose cwd is PATH (default: .) or below
+
+The data comes from Claude Code's own state files (~/.claude/sessions,
+~/.claude/projects transcripts). They are undocumented internals, so every
+field is read defensively and shown as '-' when missing.
+"""
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import re
+import shutil
+import sys
+import time
+import unicodedata
+from pathlib import Path
+
+VERSION = "0.1.0"
+HOME = Path.home()
+CLAUDE_DIR = Path(os.environ.get("CLAUDE_CONFIG_DIR") or HOME / ".claude")
+STATE_FILE = (Path(os.environ["CLAUDE_CONFIG_DIR"]) / ".claude.json"
+              if os.environ.get("CLAUDE_CONFIG_DIR") else HOME / ".claude.json")
+ACCOUNTS_DIR = Path(os.environ.get("CLAUDE_ACCOUNTS_DIR")
+                    or HOME / ".local/share/claude-accounts")
+VERSIONS_DIR = HOME / ".local/share/claude/versions"
+CACHE_DIR = Path(os.environ.get("XDG_CACHE_HOME") or HOME / ".cache") / "claude-sessions"
+RELEASES_URL = "https://downloads.claude.ai/claude-code-releases/{channel}"
+CHECK_EVERY = 6 * 3600        # ask the release server at most every 6 h
+CHECK_TIMEOUT = 2
+TAIL_BYTES = 8 << 20          # read at most the last 8 MB of a transcript
+SHELLS = {"zsh", "bash", "sh", "fish", "dash"}
+STATUS_ORDER = {"waiting": 0, "busy": 1, "idle": 2}
+
+
+def die(msg: str) -> None:
+    print(f"claude-sessions: {msg}", file=sys.stderr)
+    sys.exit(1)
+
+
+def read_json(path: Path):
+    try:
+        with open(path, encoding="utf-8") as f:
+            return json.load(f)
+    except (OSError, ValueError):
+        return None
+
+
+# ---------------------------------------------------------------- processes
+
+def proc_table() -> dict[int, tuple[int, str, str]]:
+    """pid -> (ppid, comm, starttime) for every visible process."""
+    table = {}
+    for d in os.listdir("/proc"):
+        if not d.isdigit():
+            continue
+        try:
+            with open(f"/proc/{d}/stat", encoding="utf-8", errors="replace") as f:
+                s = f.read()
+        except OSError:
+            continue
+        lp, rp = s.find("("), s.rfind(")")
+        comm = s[lp + 1:rp]
+        rest = s[rp + 2:].split()
+        # rest[0] = state (field 3), so field N is rest[N-3]
+        table[int(d)] = (int(rest[1]), comm, rest[19])
+    return table
+
+
+def children(table, pid):
+    return [p for p, (pp, _, _) in table.items() if pp == pid]
+
+
+def descendants(table, pid):
+    out, todo = [], [pid]
+    while todo:
+        kids = children(table, todo.pop())
+        out += kids
+        todo += kids
+    return out
+
+
+TASK_RE = re.compile(r"/tasks/([A-Za-z0-9]+)\.output$")
+
+
+def task_id(pid: int) -> str | None:
+    """Claude Code points a command's stdout at tasks/<id>.output."""
+    try:
+        for fd in os.listdir(f"/proc/{pid}/fd"):
+            try:
+                m = TASK_RE.search(os.readlink(f"/proc/{pid}/fd/{fd}"))
+            except OSError:
+                continue
+            if m:
+                return m.group(1)
+    except OSError:
+        pass
+    return None
+
+
+def proc_summary(table, pid, bg_ids: set[str], busy: bool) -> dict:
+    """Commands the session runs: background tasks, the foreground one, helpers.
+
+    Every Bash call is a shell child of the claude process. It is a
+    background task when the transcript recorded its task id as one, or
+    when it outlives the turn (the session is not busy).
+    """
+    bg, fg, helpers = [], 0, []
+    for c in children(table, pid):
+        comm = table[c][1]
+        if comm in SHELLS:
+            tid = task_id(c)
+            if tid in bg_ids or not busy:
+                bg.append(tid or str(c))
+            else:
+                fg += 1
+        else:
+            helpers.append(helper_name(c, comm))
+    return {"background": len(bg), "background_ids": bg, "foreground": fg,
+            "helpers": sorted(helpers)}
+
+
+def helper_name(pid, comm) -> str:
+    try:
+        with open(f"/proc/{pid}/cmdline", "rb") as f:
+            args = [a.decode(errors="replace") for a in f.read().split(b"\0") if a]
+    except OSError:
+        args = []
+    joined = " ".join(args)
+    if "mcp" in joined:
+        m = re.search(r"([\w.-]+)\s+mcp\b", joined)
+        return f"mcp:{Path(m.group(1)).name}" if m else "mcp"
+    if comm.startswith("node") and args:
+        return Path(args[1] if len(args) > 1 else args[0]).name
+    return comm
+
+
+def work_summary(table, pid, main_bg: set[str], agents: list[dict], busy: bool) -> dict:
+    bg_ids = set(main_bg)
+    for a in agents:
+        bg_ids |= a["bg_ids"]
+    w = proc_summary(table, pid, bg_ids, busy)
+    live = set(w["background_ids"])
+    running = [a for a in agents if not a["finished"] or a["bg_ids"] & live]
+    w.update(agents=len(agents), agents_running=len(running),
+             agents_active=[a["description"] for a in running])
+    return w
+
+
+def current_session_pid(live: set[int], table) -> int | None:
+    pid = os.getpid()
+    seen = set()
+    while pid > 1 and pid not in seen:
+        if pid in live:
+            return pid
+        seen.add(pid)
+        pid = table.get(pid, (0,))[0]
+    return None
+
+
+# ---------------------------------------------------------------- transcripts
+
+# The main transcript stores "backgroundTaskId"; a subagent's transcript
+# only has the tool result text. Match both.
+BG_RE = re.compile(rb'"backgroundTaskId":"([A-Za-z0-9]+)"|running in background with ID: ([A-Za-z0-9]+)')
+
+
+def bg_ids_in(data: bytes) -> set[str]:
+    return {(a or b).decode() for a, b in BG_RE.findall(data)}
+
+
+def tail(path: Path, n: int = TAIL_BYTES) -> bytes:
+    try:
+        with open(path, "rb") as f:
+            size = f.seek(0, 2)
+            f.seek(max(0, size - n))
+            return f.read()
+    except OSError:
+        return b""
+TYPE_RE = re.compile(r'^\{"type":"([a-z-]+)"')
+WANTED = {"ai-title", "custom-title", "last-prompt", "session-owner",
+          "pr-link", "permission-mode", "api-request"}
+
+
+def project_dir(cwd: str) -> Path:
+    return CLAUDE_DIR / "projects" / re.sub(r"[^A-Za-z0-9]", "-", cwd)
+
+
+def transcript_info(path: Path) -> dict:
+    """Keep the last line of each wanted record type, parse only those."""
+    last: dict[str, str] = {}
+    data = tail(path)
+    if not data:
+        return {}
+    bg_ids = bg_ids_in(data)
+    for raw in data.split(b"\n"):
+        if not raw.startswith(b"{"):
+            continue
+        line = raw.decode("utf-8", "replace")
+        m = TYPE_RE.match(line)
+        if m and m.group(1) in WANTED:
+            last[m.group(1)] = line
+        elif '"subtype":"away_summary"' in line:
+            last["away_summary"] = line
+
+    def get(kind):
+        try:
+            return json.loads(last[kind]) if kind in last else {}
+        except ValueError:
+            return {}
+
+    req = get("api-request").get("params") or {}
+    return {
+        "title": get("custom-title").get("customTitle") or get("ai-title").get("aiTitle"),
+        "summary": get("away_summary").get("content"),
+        "last_prompt": get("last-prompt").get("lastPrompt"),
+        "owner": get("session-owner").get("accountUuid"),
+        "pr": get("pr-link").get("prNumber"),
+        "pr_url": get("pr-link").get("prUrl"),
+        "mode": get("permission-mode").get("permissionMode"),
+        "model": req.get("model"),
+        "effort": (req.get("output_config") or {}).get("effort"),
+        "bg_ids": bg_ids,
+    }
+
+
+def agents_info(cwd: str, sid: str) -> list[dict]:
+    """Subagents of a session with the background task ids each started.
+    "finished" only means the agent ended its turn: one that left a
+    background task runs again when that task ends."""
+    d = project_dir(cwd) / sid / "subagents"
+    out = []
+    for meta in sorted(d.glob("agent-*.meta.json")) if d.is_dir() else ():
+        m = read_json(meta) or {}
+        out.append({"description": m.get("description"), "model": m.get("model"),
+                    "finished": bool(m.get("finished")),
+                    "bg_ids": bg_ids_in(tail(meta.with_name(meta.name[:-len(".meta.json")] + ".jsonl"), 1 << 20))})
+    return out
+
+
+# ---------------------------------------------------------------- accounts / versions
+
+def accounts() -> dict[str, dict]:
+    """accountUuid -> {name, email}. Reads only account.json, never tokens."""
+    out = {}
+    if ACCOUNTS_DIR.is_dir():
+        for d in sorted(ACCOUNTS_DIR.iterdir()):
+            acc = (read_json(d / "account.json") or {}).get("oauthAccount") or {}
+            if acc.get("accountUuid"):
+                out[acc["accountUuid"]] = {"name": d.name,
+                                           "email": acc.get("emailAddress")}
+    return out
+
+
+def vkey(v: str):
+    return tuple(int(x) if x.isdigit() else 0 for x in re.split(r"[.-]", v or "0"))
+
+
+def newest_installed() -> str | None:
+    try:
+        vs = [p.name for p in VERSIONS_DIR.iterdir() if re.match(r"^\d+\.\d+\.\d+$", p.name)]
+    except OSError:
+        return None
+    return max(vs, key=vkey) if vs else None
+
+
+def update_channel() -> str:
+    """Release channel of the native installer (settings.autoUpdatesChannel)."""
+    for f in (CLAUDE_DIR / "settings.json", STATE_FILE):
+        ch = (read_json(f) or {}).get("autoUpdatesChannel")
+        if ch in ("latest", "stable"):
+            return ch
+    return "latest"
+
+
+def refresh_release(channel: str) -> None:
+    """Ask the release server for the newest version and cache the answer."""
+    import urllib.request
+    try:
+        req = urllib.request.Request(RELEASES_URL.format(channel=channel),
+                                     headers={"User-Agent": f"claude-sessions/{VERSION}"})
+        with urllib.request.urlopen(req, timeout=CHECK_TIMEOUT) as r:
+            v = r.read(64).decode().strip()
+    except Exception:
+        v = None
+    if v and not re.match(r"^\d+\.\d+\.\d+$", v):
+        v = None
+    old = read_json(CACHE_DIR / "release.json") or {}
+    data = {"checked": time.time(), "channel": channel,
+            "version": v or (old.get("version") if old.get("channel") == channel else None),
+            "ok": bool(v)}
+    CACHE_DIR.mkdir(parents=True, exist_ok=True)
+    tmp = CACHE_DIR / f"release.json.{os.getpid()}"
+    tmp.write_text(json.dumps(data))
+    tmp.replace(CACHE_DIR / "release.json")
+
+
+def released_version(offline: bool) -> str | None:
+    """Cached newest release. A stale cache is refreshed in a detached child,
+    so this never waits for the network; the new value shows next run."""
+    channel = update_channel()
+    cache = read_json(CACHE_DIR / "release.json") or {}
+    fresh = cache.get("channel") == channel and time.time() - cache.get("checked", 0) < CHECK_EVERY
+    if not offline and not fresh:
+        try:
+            if os.fork() == 0:            # child: detach, refresh, exit
+                os.setsid()
+                fd = os.open(os.devnull, os.O_RDWR)
+                for n in (0, 1, 2):
+                    os.dup2(fd, n)
+                try:
+                    refresh_release(channel)
+                finally:
+                    os._exit(0)
+        except OSError:
+            pass
+    return cache.get("version") if cache.get("channel") == channel else None
+
+
+def pretty_model(m: str | None) -> str:
+    if not m:
+        return "-"
+    mm = re.match(r"^claude-([a-z]+)-(\d+)(?:-(\d{1,2}))?(?:-\d{8})?(\[1m\])?$", m)
+    if not mm:
+        return m
+    fam, maj, minor, big = mm.groups()
+    return f"{fam.capitalize()} {maj}{'.' + minor if minor else ''}{' 1M' if big else ''}"
+
+
+# ---------------------------------------------------------------- collect
+
+def collect(project: str | None, offline: bool = False) -> dict:
+    table = proc_table()
+    accs = accounts()
+    state = read_json(STATE_FILE) or {}
+    active = (state.get("oauthAccount") or {})
+    active_uuid = active.get("accountUuid")
+    newest = newest_installed()
+
+    sessions = []
+    for f in (CLAUDE_DIR / "sessions").glob("*.json"):
+        s = read_json(f)
+        if not isinstance(s, dict) or not s.get("sessionId") or not s.get("pid"):
+            continue
+        pid = int(s["pid"])
+        if pid not in table or (s.get("procStart") and table[pid][2] != str(s["procStart"])):
+            continue                      # stale file: process gone or pid reused
+        cwd = s.get("cwd") or ""
+        if project and not (cwd == project or cwd.startswith(project.rstrip("/") + "/")):
+            continue
+        sid = s["sessionId"]
+        t = transcript_info(project_dir(cwd) / f"{sid}.jsonl")
+        owner = t.get("owner") or active_uuid
+        acc = accs.get(owner, {})
+        ver = s.get("version")
+        sessions.append({
+            "pid": pid,
+            "session_id": sid,
+            "name": s.get("name"),
+            "title": t.get("title"),
+            "cwd": cwd,
+            "kind": s.get("kind"),
+            "entrypoint": s.get("entrypoint"),
+            "status": s.get("status") or "-",
+            "waiting_for": s.get("waitingFor"),
+            "status_since": (s.get("statusUpdatedAt") or 0) / 1000 or None,
+            "started": (s.get("startedAt") or 0) / 1000 or None,
+            "version": ver,
+            "restart_needed": bool(ver and newest and vkey(ver) < vkey(newest)),
+            "model": t.get("model"),
+            "effort": t.get("effort"),
+            "mode": t.get("mode"),
+            "account": acc.get("name"),
+            "email": acc.get("email") or (active.get("emailAddress") if owner == active_uuid else None),
+            "owner_mismatch": bool(t.get("owner") and active_uuid and t["owner"] != active_uuid),
+            "pr": t.get("pr"),
+            "pr_url": t.get("pr_url"),
+            "summary": t.get("summary"),
+            "last_prompt": t.get("last_prompt"),
+            **work_summary(table, pid, t.get("bg_ids") or set(), agents_info(cwd, sid),
+                           s.get("status") == "busy"),
+        })
+
+    me = current_session_pid({x["pid"] for x in sessions}, table)
+    for x in sessions:
+        x["current"] = x["pid"] == me
+    sessions.sort(key=lambda x: (STATUS_ORDER.get(x["status"], 3), -(x["status_since"] or 0)))
+    active_name = accs.get(active_uuid, {}).get("name") or active.get("displayName")
+    released = released_version(offline)
+    return {"generated": time.time(), "newest_installed": newest,
+            "released": released, "channel": update_channel(),
+            "update_available": bool(released and newest and vkey(released) > vkey(newest)),
+            "active_account": active_name, "offline": offline, "sessions": sessions}
+
+
+# ---------------------------------------------------------------- render
+
+class C:
+    on = False
+
+    @classmethod
+    def w(cls, code, text):
+        return f"\033[{code}m{text}\033[0m" if cls.on and text else text
+
+
+STATUS_STYLE = {"waiting": ("1;33", "◆"), "busy": ("1;32", "●"), "idle": ("90", "○")}
+ANSI_RE = re.compile(r"\033\[[0-9;]*m")
+
+
+def dwidth(s: str) -> int:
+    s = ANSI_RE.sub("", s)
+    return sum(0 if unicodedata.combining(ch) else
+               2 if unicodedata.east_asian_width(ch) in "WF" else 1 for ch in s)
+
+
+def clip(s: str, width: int) -> str:
+    """Cut a plain string to a display width, adding … when cut."""
+    if dwidth(s) <= width:
+        return s
+    out, w = [], 0
+    for ch in s:
+        cw = 2 if unicodedata.east_asian_width(ch) in "WF" else (0 if unicodedata.combining(ch) else 1)
+        if w + cw > width - 1:
+            break
+        out.append(ch)
+        w += cw
+    return "".join(out) + "…"
+
+
+def clip_left(s: str, width: int) -> str:
+    """Like clip, but keep the end (the project folder of a path)."""
+    return s if dwidth(s) <= width else "…" + clip(s[::-1], width)[:-1][::-1]
+
+
+def ago(t: float | None, now: float) -> str:
+    if not t:
+        return "-"
+    d = max(0, int(now - t))
+    for unit, n in (("d", 86400), ("h", 3600), ("m", 60)):
+        if d >= n:
+            return f"{d // n}{unit}"
+    return f"{d}s"
+
+
+def tilde(p: str) -> str:
+    h = str(HOME)
+    return "~" + p[len(h):] if p == h or p.startswith(h + "/") else p
+
+
+def one_line(s: str | None) -> str:
+    return re.sub(r"\s+", " ", s or "").strip()
+
+
+def render(data: dict, long: bool, width: int, short: bool = False) -> str:
+    now = data["generated"]
+    ss = data["sessions"]
+    counts = {k: sum(1 for x in ss if x["status"] == k) for k in STATUS_ORDER}
+    head = [C.w("1", f"Claude sessions · {len(ss)} open")]
+    for k in STATUS_ORDER:
+        if counts[k]:
+            head.append(C.w(STATUS_STYLE[k][0], f"{counts[k]} {k}"))
+    if data["active_account"]:
+        head.append(f"account {C.w('1;36', data['active_account'])}")
+    if data["newest_installed"]:
+        head.append(f"v{data['newest_installed']}")
+    if data.get("offline"):
+        head.append(C.w("90", "offline"))
+    if data["update_available"]:
+        head.append(C.w("1;33", f"↑ {data['released']} available · claude update"))
+    restart = sum(1 for x in ss if x["restart_needed"])
+    if restart:
+        head.append(C.w("1;33", f"⟳ {restart} need a restart"))
+    out = [" · ".join(head), ""]
+
+    if short:
+        out.pop()  # no blank line in the short form
+        for x in ss:
+            code, dot = STATUS_STYLE.get(x["status"], ("0", "?"))
+            mark = C.w("1;35", "▶") if x["current"] else " "
+            left = f"{mark} {C.w(code, dot)} "
+            name = x["name"] or x["session_id"][:8]
+            right = f" {os.path.basename(x['cwd'].rstrip('/')) or '/'}  {ago(x['status_since'], now):>3}"
+            room = width - dwidth(left) - dwidth(right)
+            body = clip(name + " · " + (one_line(x["title"]) or "-"), max(room, 8))
+            pad = max(1, width - dwidth(left) - dwidth(body) - dwidth(right))
+            out.append(left + C.w("1", body) + " " * pad + C.w("90", right.lstrip(" ")))
+        return "\n".join(out)
+
+    for x in ss:
+        code, dot = STATUS_STYLE.get(x["status"], ("0", "?"))
+        mark = C.w("1;35", "▶") if x["current"] else " "
+        status = x["status"] + (f" ({x['waiting_for']})" if x["waiting_for"] else "")
+        name = x["name"] or x["session_id"][:8]
+        left = f"{mark} {C.w(code, dot + ' ' + status)} {C.w('1', name)} "
+        ids = f"{x['pid']:>7} {x['session_id'][:8]}"
+        right = f" {ids}  {ago(x['status_since'], now):>3}"
+        room = width - dwidth(left) - dwidth(right)
+        title = clip(one_line(x["title"]) or "-", max(room, 8))
+        pad = max(1, width - dwidth(left) - dwidth(title) - dwidth(right))
+        out.append(left + C.w("36", title) + " " * pad + C.w("90", right.lstrip(" ")))
+
+        bits = [pretty_model(x["model"]) + (f" {x['effort']}" if x["effort"] else "")]
+        if x["mode"] and x["mode"] != "default":
+            bits.append(x["mode"])
+        acc = x["account"] or x["email"] or "-"
+        bits.append(C.w("1;31", f"⚠ {acc}") if x["owner_mismatch"] else acc)
+        ver = x["version"] or "-"
+        bits.append(C.w("1;33", f"{ver} ⟳ restart") if x["restart_needed"] else ver)
+        if (x["entrypoint"] or "").startswith("sdk"):
+            bits.append(C.w("35", "headless"))
+        elif x["kind"] and x["kind"] != "interactive":
+            bits.append(x["kind"])
+        if x["foreground"]:
+            bits.append(C.w("32", "running cmd"))
+        if x["background"]:
+            bits.append(C.w("1;32", f"bg {x['background']}"))
+        if x["agents"]:
+            bits.append(C.w("1;32", f"agents {x['agents_running']}/{x['agents']} running")
+                        if x["agents_running"] else f"agents {x['agents']}")
+        if x["pr"]:
+            bits.append(C.w("35", f"PR #{x['pr']}"))
+        path = tilde(x["cwd"])
+        tail = " · ".join(bits)
+        cwd = clip_left(path, max(16, width - 4 - dwidth(tail) - 3))
+        out.append("    " + C.w("38;5;250", cwd) + " · " + tail)
+
+        if long:
+            text = one_line(x["summary"]) or one_line(x["last_prompt"])
+            if text:
+                out.append("    " + C.w("90", clip(("» " if not x["summary"] else "") + text, width - 4)))
+    return "\n".join(out)
+
+
+# ---------------------------------------------------------------- main
+
+def main() -> None:
+    ap = argparse.ArgumentParser(
+        prog="claude-sessions",
+        description="Show every open Claude Code session: status, account, model, "
+                    "shells, agents and version.")
+    form = ap.add_mutually_exclusive_group()
+    form.add_argument("-l", "--long", action="store_true", help="add the summary / last prompt line")
+    form.add_argument("-s", "--short", action="store_true", help="one line per session")
+    ap.add_argument("--json", action="store_true", help="print JSON instead of text")
+    ap.add_argument("--watch", type=float, metavar="N", help="redraw every N seconds")
+    ap.add_argument("--project", nargs="?", const=".", metavar="PATH",
+                    help="only sessions in PATH (default: current directory) or below")
+    ap.add_argument("--offline", action="store_true",
+                    help="never ask the release server for a newer version")
+    ap.add_argument("--color", choices=("auto", "always", "never"), default="auto")
+    ap.add_argument("-V", "--version", action="version", version=f"%(prog)s {VERSION}")
+    a = ap.parse_args()
+
+    if not (CLAUDE_DIR / "sessions").is_dir():
+        die(f"no session directory at {CLAUDE_DIR / 'sessions'}")
+    project = os.path.realpath(a.project) if a.project else None
+    C.on = a.color == "always" or (a.color == "auto" and sys.stdout.isatty()
+                                   and not os.environ.get("NO_COLOR"))
+
+    def once():
+        data = collect(project, a.offline)
+        if a.json:
+            return json.dumps(data, ensure_ascii=False, indent=2)
+        return render(data, a.long, shutil.get_terminal_size((120, 40)).columns, a.short)
+
+    if not a.watch:
+        print(once())
+        return
+    try:
+        while True:
+            text = once()
+            sys.stdout.write("\033[H\033[2J" + text + "\n")
+            sys.stdout.flush()
+            time.sleep(max(a.watch, 0.5))
+    except KeyboardInterrupt:
+        print()
+
+
+if __name__ == "__main__":
+    try:
+        main()
+    except BrokenPipeError:
+        sys.exit(0)

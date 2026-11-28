@@ -1,0 +1,14 @@
+[Unit]
+Description=Evento de la ventana de 5 h de %i (cierre o ping)
+After=network-online.target
+# Reintenta si falla (p. ej. sin red al arrancar), máx. 4 veces por hora.
+StartLimitIntervalSec=1h
+StartLimitBurst=4
+
+[Service]
+Type=oneshot
+Environment=PATH=%h/.local/bin:/usr/local/bin:/usr/bin:/bin
+ExecStart=%h/.local/bin/claude-usage --keepalive --account %i
+TimeoutStartSec=10min
+Restart=on-failure
+RestartSec=3min

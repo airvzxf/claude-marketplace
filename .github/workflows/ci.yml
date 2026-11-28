@@ -89,6 +89,25 @@ jobs:
             echo "::endgroup::"
           done
 
+  tools:
+    name: 'Tools · shellcheck and Python'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: shellcheck the shell tools
+        # shellcheck ships with the runner image.
+        run: shellcheck tools/claude-account/claude-account tools/claude-usage/claude-usage
+
+      - name: The Python tools compile and answer --help
+        run: |
+          set -euo pipefail
+          python3 -m py_compile plugins/sessions/bin/claude-sessions
+          python3 plugins/sessions/bin/claude-sessions --help >/dev/null
+
   actionlint:
     name: 'Workflows · actionlint'
     runs-on: ubuntu-latest

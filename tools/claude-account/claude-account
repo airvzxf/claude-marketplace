@@ -1,0 +1,214 @@
+#!/usr/bin/env bash
+# claude-account: keep several Claude Code logins on one machine and swap
+# between them without the browser login. Only the account parts are
+# swapped; settings, plugins, MCP tokens, memory and sessions stay shared.
+#
+#   claude-account save <name>     store the current login as <name>
+#   claude-account use <name>      save current login, then switch to <name>
+#   claude-account use auto        switch to the saved login with most room left
+#   claude-account list            saved logins (* = active)
+#   claude-account whoami          active login: local files vs. server
+#   claude-account usage [name]    plan usage of one or all saved logins
+#
+# Open Claude Code sessions re-read the login from disk, so a switch moves
+# every open session to the new account (each loses its prompt cache).
+# jq programs are single-quoted on purpose: their $names are jq variables.
+# shellcheck disable=SC2016
+set -euo pipefail
+
+CLAUDE_DIR="${CLAUDE_CONFIG_DIR:-$HOME/.claude}"
+CREDS="$CLAUDE_DIR/.credentials.json"
+STATE="${CLAUDE_CONFIG_DIR:+$CLAUDE_CONFIG_DIR/.claude.json}"
+STATE="${STATE:-$HOME/.claude.json}"
+STORE="${CLAUDE_ACCOUNTS_DIR:-$HOME/.local/share/claude-accounts}"
+API="https://api.anthropic.com/api/oauth"
+
+# Keys of ~/.claude.json that belong to the account (identity + caches).
+ACCOUNT_KEYS='["oauthAccount","cachedUsageUtilization","modelAccessCache",
+ "orgModelDefaultCache","cachedExtraUsageDisabledReason",
+ "passesEligibilityCache","passesLastSeenRemaining","groveConfigCache",
+ "cachedArtifactRoster","githubWebConnectionStatusCache",
+ "additionalModelOptionsCache","additionalModelCostsCache",
+ "unusedLimitResetStatusCache"]'
+
+die() { echo "claude-account: $*" >&2; exit 1; }
+need() { command -v "$1" >/dev/null || die "missing command: $1"; }
+need jq; need curl
+
+# --force is accepted for compatibility; it no longer changes anything.
+ARGS=()
+for a in "$@"; do [[ $a == --force ]] || ARGS+=("$a"); done
+set -- "${ARGS[@]+"${ARGS[@]}"}"
+
+open_sessions() { pgrep -u "$(id -u)" -x claude | wc -l; }
+
+valid_name() {
+  [[ $1 =~ ^[A-Za-z0-9._-]+$ ]] || die "invalid name: '$1'"
+  [[ $1 != auto ]] || die "'auto' is reserved"
+}
+
+current_email() { jq -r '.oauthAccount.emailAddress // empty' "$STATE"; }
+
+# Atomic rewrite of $1 with jq filter $2 (+ extra jq args), mode 600.
+jq_rewrite() {
+  local file=$1 filter=$2; shift 2
+  local tmp; tmp=$(mktemp "$file.XXXXXX")
+  jq "$@" "$filter" "$file" >"$tmp" && chmod 600 "$tmp" && mv "$tmp" "$file"
+}
+
+do_save() {
+  local name=$1; valid_name "$name"
+  [[ -f $CREDS && -f $STATE ]] || die "no Claude Code login found"
+  jq -e '.claudeAiOauth.refreshToken' "$CREDS" >/dev/null || die "not logged in"
+  local dir="$STORE/$name"
+  mkdir -p "$dir"; chmod 700 "$STORE" "$dir"
+  local email old
+  email=$(current_email)
+  if [[ -f $dir/account.json ]]; then
+    old=$(jq -r '.oauthAccount.emailAddress // empty' "$dir/account.json")
+    [[ -n $old && $old != "$email" ]] && die "'$name' holds $old, but the active login is $email"
+  fi
+  umask 077
+  jq '.claudeAiOauth' "$CREDS" >"$dir/oauth.json.tmp" && mv "$dir/oauth.json.tmp" "$dir/oauth.json"
+  jq --argjson k "$ACCOUNT_KEYS" 'with_entries(select(.key as $x | $k | index($x)))' \
+    "$STATE" >"$dir/account.json.tmp" && mv "$dir/account.json.tmp" "$dir/account.json"
+  date -Is >"$dir/saved-at"
+  echo "saved '$name' ($email)"
+}
+
+# Name of the saved login whose e-mail matches the active login.
+active_name() {
+  local email d; email=$(current_email)
+  [[ -z $email ]] && return 0
+  for d in "$STORE"/*/; do
+    [[ -f $d/account.json ]] || continue
+    [[ $(jq -r '.oauthAccount.emailAddress // empty' "$d/account.json") == "$email" ]] \
+      && { basename "$d"; return 0; }
+  done
+}
+
+do_use() {
+  local name=$1
+  if [[ $name == auto ]]; then name=$(pick_auto); [[ -n $name ]] || die "no saved login has usage data"; fi
+  valid_name "$name"
+  local dir="$STORE/$name"
+  [[ -f $dir/oauth.json && -f $dir/account.json ]] || die "no saved login '$name'"
+
+  local cur; cur=$(active_name)
+  if [[ -n $cur ]]; then
+    [[ $cur == "$name" ]] && { echo "'$name' is already active"; return 0; }
+    do_save "$cur"   # keep the freshest (possibly rotated) tokens
+  elif [[ -n $(current_email) ]]; then
+    die "active login $(current_email) is not saved; run 'claude-account save <name>' first"
+  fi
+
+  mkdir -p "$STORE/.backup"; chmod 700 "$STORE/.backup"
+  cp -p "$CREDS" "$STORE/.backup/credentials.json"
+  cp -p "$STATE" "$STORE/.backup/claude.json"
+
+  jq_rewrite "$CREDS" '.claudeAiOauth = $o[0]' --slurpfile o "$dir/oauth.json"
+  jq_rewrite "$STATE" '($a[0]) as $a | reduce ($k[]) as $x (.;
+      if $a | has($x) then .[$x] = $a[$x] else del(.[$x]) end)' \
+    --slurpfile a "$dir/account.json" --argjson k "$ACCOUNT_KEYS"
+  echo "now using '$name' ($(current_email)); previous files in $STORE/.backup/"
+
+  local n; n=$(open_sessions)
+  (( n > 0 )) && echo "note: $n open Claude Code session(s) now use '$name'; their next prompt resends the whole context (no cache)"
+  verify_switch "$(jq -r '.oauthAccount.emailAddress' "$dir/account.json")"
+}
+
+# After a switch, ask the server whose token is on disk.
+verify_switch() {
+  local want=$1 tok server
+  sleep 1   # let an open session that was writing its files finish
+  tok=$(jq -r '.claudeAiOauth.accessToken // empty' "$CREDS")
+  server=$(api "$tok" profile | jq -r '.account.email // empty' 2>/dev/null || true)
+  if [[ $(current_email) != "$want" ]]; then
+    die "MISMATCH: ~/.claude.json says $(current_email), expected $want; run 'use' again"
+  elif [[ -z $server ]]; then
+    echo "verify: token expired, the server can't confirm yet; Claude Code renews it on the next prompt, then run 'claude-account whoami'"
+  elif [[ $server != "$want" ]]; then
+    die "MISMATCH: the token on disk is $server, expected $want; run 'use' again"
+  else
+    echo "verify: server confirms $server"
+  fi
+}
+
+# Access token of a saved login (the live one if it is active).
+profile_token() {
+  if [[ $1 == "$(active_name)" ]]; then jq -r '.claudeAiOauth.accessToken' "$CREDS"
+  else jq -r '.accessToken' "$STORE/$1/oauth.json"; fi
+}
+
+# Saved login with the lowest max(5h, 7d) usage; skips logins without data.
+pick_auto() {
+  local d n u best="" best_u=101
+  for d in "$STORE"/*/; do
+    [[ -f $d/oauth.json ]] || continue
+    n=$(basename "$d")
+    u=$(api "$(profile_token "$n")" usage \
+        | jq -r 'select(.five_hour) | [.five_hour.utilization, .seven_day.utilization] | map(. // 0) | max | floor' 2>/dev/null || true)
+    if [[ ! $u =~ ^[0-9]+$ ]]; then echo "auto: '$n' skipped (token expired, no usage data)" >&2; continue; fi
+    echo "auto: '$n' at ${u}%" >&2
+    (( u < best_u )) && { best=$n; best_u=$u; }
+  done
+  echo "$best"
+}
+
+api() { # api <token> <endpoint>
+  curl -s -m 10 "$API/$2" -H "Authorization: Bearer $1" -H "anthropic-beta: oauth-2025-04-20"
+}
+
+token_state() { # token_state <oauth.json-file-or-creds> <jq path>
+  local exp now; exp=$(jq -r "$2.expiresAt // 0" "$1"); now=$(( $(date +%s) * 1000 ))
+  if (( exp > now )); then echo "valid until $(date -d @$((exp/1000)) '+%F %R')"
+  else echo "expired (Claude Code renews it on next start)"; fi
+}
+
+do_list() {
+  local active d n; active=$(active_name)
+  shopt -s nullglob
+  for d in "$STORE"/*/; do
+    n=$(basename "$d")
+    printf '%s %-10s %-32s saved %s, token %s\n' "$([[ $n == "$active" ]] && echo '*' || echo ' ')" \
+      "$n" "$(jq -r '.oauthAccount.emailAddress' "$d/account.json")" \
+      "$(cut -c1-16 "$d/saved-at")" "$(token_state "$d/oauth.json" '')"
+  done
+  [[ -n $active ]] || echo "(active login $(current_email) is not saved)"
+}
+
+do_whoami() {
+  local tok server; tok=$(jq -r '.claudeAiOauth.accessToken // empty' "$CREDS")
+  # shellcheck disable=SC2088 # a label, not a path to expand
+  echo "~/.claude.json  : $(current_email)  (what /status shows)"
+  echo "saved as        : $(active_name)"
+  echo "access token    : $(token_state "$CREDS" '.claudeAiOauth')"
+  server=$(api "$tok" profile | jq -r '.account.email // empty' 2>/dev/null || true)
+  echo "server (token)  : ${server:-unknown: token expired or rejected}"
+  [[ -n $server && $server != "$(current_email)" ]] && echo "MISMATCH: token and ~/.claude.json are different accounts" >&2
+  return 0
+}
+
+show_usage() { # show_usage <label> <token>
+  local u; u=$(api "$2" usage)
+  if jq -e '.five_hour' >/dev/null 2>&1 <<<"$u"; then
+    jq -r --arg l "$1" '"\($l): 5h \(.five_hour.utilization)% (reset \(.five_hour.resets_at[0:16])), 7d \(.seven_day.utilization)% (reset \(.seven_day.resets_at[0:16]))"' <<<"$u"
+  else echo "$1: no data (token expired; start Claude Code with this login to renew it)"; fi
+}
+
+do_usage() {
+  local d n
+  for d in "$STORE"/*/; do
+    n=$(basename "$d"); [[ $# -gt 0 && $n != "$1" ]] && continue
+    show_usage "$n" "$(profile_token "$n")"
+  done
+}
+
+case "${1:-}" in
+  save)   [[ $# -eq 2 ]] || die "usage: claude-account save <name>"; do_save "$2" ;;
+  use)    [[ $# -eq 2 ]] || die "usage: claude-account use <name>"; do_use "$2" ;;
+  list|ls) do_list ;;
+  whoami) do_whoami ;;
+  usage)  shift; do_usage "$@" ;;
+  *) sed -n '2,/^set /p' "$0" | grep '^#' | sed 's/^# \{0,1\}//'; exit 1 ;;
+esac

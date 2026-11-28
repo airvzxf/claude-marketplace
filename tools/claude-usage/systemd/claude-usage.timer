@@ -1,0 +1,12 @@
+[Unit]
+Description=Revisar las ventanas de todas las cuentas cada 30–60 min (aleatorio)
+
+[Timer]
+# OnCalendar nunca queda "elapsed" (OnBootSec+OnUnitActiveSec se quedó muerto tras un reinicio).
+OnStartupSec=3min
+OnCalendar=*:0/30
+RandomizedDelaySec=30min
+AccuracySec=1min
+
+[Install]
+WantedBy=timers.target
